@@ -1,0 +1,119 @@
+{
+  "icon": "icon.svg",
+  "main": "runtime/index.js",
+  "drivers": [
+    "browser"
+  ],
+  "permissions": {
+    "browser": {}
+  },
+  "fileViews": {
+    ".canvas": {
+      "view": "canvas.editor"
+    }
+  },
+  "provides": [
+    {
+      "id": "fileTree.contextItem",
+      "kind": "extension",
+      "version": "1.0.0"
+    },
+    {
+      "id": "newTab.entry",
+      "kind": "extension",
+      "version": "1.0.0"
+    },
+    {
+      "id": "workspace.surface",
+      "version": "1.0.0",
+      "kind": "extension"
+    },
+    {
+      "id": "metadataPanel.segment",
+      "version": "1.0.0",
+      "kind": "extension"
+    },
+    {
+      "id": "workspace.bookmark",
+      "kind": "service",
+      "version": "1.0.0"
+    }
+  ],
+  "guardPresets": {
+    "schemaVersion": 1,
+    "defaultPreset": "recommended",
+    "presets": [
+      {
+        "id": "recommended",
+        "label": "Recommended",
+        "version": 1,
+        "description": "Creating a new canvas is low-risk and runs without asking.",
+        "entries": {
+          "commands": {
+            "create": {
+              "decision": "allow"
+            }
+          }
+        }
+      },
+      {
+        "id": "read-only",
+        "label": "Read-only",
+        "version": 1,
+        "description": "The assistant may not create canvases.",
+        "entries": {
+          "commands": {
+            "create": {
+              "decision": "deny"
+            }
+          }
+        }
+      },
+      {
+        "id": "blocked",
+        "label": "Blocked",
+        "version": 1,
+        "description": "No canvas actions at all.",
+        "entries": {
+          "commands": {
+            "create": {
+              "decision": "deny"
+            }
+          }
+        }
+      }
+    ]
+  },
+  "settingsSchema": {
+    "fields": [
+      {
+        "key": "snapToGrid",
+        "label": "Snap to grid",
+        "labelKey": "plugin.canvas.field.snapGrid",
+        "type": "boolean",
+        "default": false,
+        "description": "Snap cards to a grid while moving and resizing.",
+        "descriptionKey": "auto.b749cc40ed17"
+      },
+      {
+        "key": "snapToObjects",
+        "label": "Snap to objects",
+        "labelKey": "plugin.canvas.field.snapObjects",
+        "type": "boolean",
+        "default": true,
+        "description": "Snap cards to the edges and centers of nearby cards while moving (with alignment guides).",
+        "descriptionKey": "auto.aab0131473d5"
+      }
+    ]
+  },
+  "locales": {
+    "en": "runtime/locales/en.json",
+    "de": "runtime/locales/de.json",
+    "es": "runtime/locales/es.json",
+    "fr": "runtime/locales/fr.json",
+    "zh-CN": "runtime/locales/zh-CN.json"
+  },
+  "runtime": {
+    "ui": "runtime/index.js"
+  }
+}
