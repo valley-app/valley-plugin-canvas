@@ -5,8 +5,8 @@
  *
  * The spec of record is `spec/1.0.md` in the JSON Canvas repository (jsoncanvas.org)
  * (MIT) — the versioned file, not the website rendering, so a 1.1 shows up as a
- * diff. `tests/fixtures/sample.canvas` is an adapted sample with a neutral project link,
- * round-tripped by the test suite.
+ * diff. `tests/fixtures/sample.canvas` adapts its sample with a neutral project
+ * link and is round-tripped by the test suite.
  *
  * Tolerance mirrors the vault's JSONL invariant: a malformed `.canvas` never
  * throws. Unparseable JSON is reported as invalid so the editor stays

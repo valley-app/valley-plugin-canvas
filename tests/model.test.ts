@@ -203,8 +203,8 @@ describe('resolveColor', () => {
 
 /**
  * The one test that checks us against the format rather than against our own
- * idea of it. `sample.canvas` is adapted from the MIT-licensed spec sample with a neutral project link
- * and must round-trip byte-identically.
+ * idea of it. `sample.canvas` adapts the spec repository's MIT-licensed sample
+ * with a neutral project link and must round-trip byte-identically.
  */
 describe('the official JSON Canvas sample', () => {
   const raw = readFileSync(
