@@ -89,6 +89,7 @@
   "plugin.canvas.field.snapObjects": "An Objekten ausrichten",
   "plugin.canvas.newTab.create": "Neue Leinwand",
   "canvas.error.preview": "Die Dateivorschau ist nicht verfügbar.",
+  "canvas.error.viewUnavailable": "Die angefragte Canvas-Ansicht ist nicht verfügbar.",
   "canvas.align.left": "Links ausrichten",
   "canvas.align.center": "Zentriert ausrichten",
   "canvas.align.right": "Rechts ausrichten",
@@ -160,5 +161,11 @@
   "canvas.suggest.media": "Bild, Video, Audiodatei oder PDF suchen …",
   "canvas.suggest.empty": "Keine passenden Dateien",
   "bookmark.view": "Canvasansicht",
-  "bookmark.item": "Ausgewählter Eintrag"
+  "bookmark.item": "Ausgewählter Eintrag",
+  "canvas.control.selectedCard": "Ausgewählte Karte",
+  "canvas.control.selectedConnection": "Ausgewählte Verbindung",
+  "canvas.control.clearSelection": "Auswahl aufheben",
+  "canvas.control.viewportX": "Horizontale Position",
+  "canvas.control.viewportY": "Vertikale Position",
+  "canvas.error.viewBusy": "Beende die aktuelle Canvas-Bearbeitung, Geste oder den Dialog, bevor du die Ansichtssteuerung änderst."
 }

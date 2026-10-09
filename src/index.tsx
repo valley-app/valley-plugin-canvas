@@ -16,7 +16,7 @@ import { FILE_TREE_CONTEXT_ITEM_V1, NEW_TAB_ENTRY_V1 } from '@valley/plugin-sdk'
 import { initRuntime } from './runtime'
 import { injectStyles } from './styles'
 import { registerCanvasSurfaces } from './surfaces'
-import { registerCanvasCommands } from './commands'
+import { createCanvasFromUi, registerCanvasCommands } from './commands'
 import { canvasNewTabEntry } from './newTabEntry'
 import CanvasView from './CanvasEditor'
 import { initLocalization } from './localization'
@@ -35,7 +35,7 @@ export function register(api: ValleyPluginApi): () => Promise<void> {
   // assistant without embedding this package's id in its own implementation.
   const offNewTab = api.interop.extensions.provide(
     NEW_TAB_ENTRY_V1,
-    canvasNewTabEntry(() => { if (owner.isActive()) void api.commands.executeOwn('create') })
+    canvasNewTabEntry(() => { if (owner.isActive()) void createCanvasFromUi(api, undefined, owner) })
   )
 
   const offFileTree = api.interop.extensions.provide(FILE_TREE_CONTEXT_ITEM_V1, {
@@ -48,7 +48,7 @@ export function register(api: ValleyPluginApi): () => Promise<void> {
       const file = path ? await owner.run(() => api.vault.fileInfo(path)) : null
       owner.assertActive()
       const folder = file ? path.slice(0, Math.max(0, path.lastIndexOf('/'))) : path
-      await api.commands.executeOwn('create', { folder })
+      await createCanvasFromUi(api, folder, owner)
     }
   })
 

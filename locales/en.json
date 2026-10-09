@@ -89,6 +89,7 @@
   "plugin.canvas.field.snapObjects": "Snap to objects",
   "plugin.canvas.newTab.create": "New canvas",
   "canvas.error.preview": "The file preview is unavailable.",
+  "canvas.error.viewUnavailable": "The exact Canvas view is unavailable.",
   "canvas.align.left": "Align left",
   "canvas.align.center": "Align center",
   "canvas.align.right": "Align right",
@@ -160,5 +161,11 @@
   "canvas.suggest.media": "Find an image, video, audio file or PDF…",
   "canvas.suggest.empty": "No matching files",
   "bookmark.view": "Canvas view",
-  "bookmark.item": "Selected item"
+  "bookmark.item": "Selected item",
+  "canvas.control.selectedCard": "Selected card",
+  "canvas.control.selectedConnection": "Selected connection",
+  "canvas.control.clearSelection": "Clear selection",
+  "canvas.control.viewportX": "Horizontal position",
+  "canvas.control.viewportY": "Vertical position",
+  "canvas.error.viewBusy": "Finish the current Canvas edit, gesture or dialog before changing view controls."
 }

@@ -27,13 +27,16 @@ describe('package host contracts', () => {
     const mock = createMockValleyApi({ manifest: declared })
     const dispose = plugin.register(mock.api)
     const stat = vi.spyOn(mock.api.vault, 'fileInfo').mockResolvedValue(info)
-    const execute = vi.spyOn(mock.api.commands, 'executeOwn').mockResolvedValue(undefined as never)
+    const execute = vi.spyOn(mock.api.commands, 'executeOwn')
     try {
       expect(declared.provides?.some((entry) => entry.id === FILE_TREE_CONTEXT_ITEM_V1.id)).toBe(true)
       const [provider] = mock.api.interop.extensions.providers(FILE_TREE_CONTEXT_ITEM_V1)
       expect(provider.extension).toMatchObject({ label: 'New canvas', directories: true })
       await provider.extension.run(path)
-      expect(execute).toHaveBeenCalledWith('create', { folder })
+      const target = `${folder ? `${folder}/` : ''}Untitled.canvas`
+      expect(execute).toHaveBeenCalledWith('create-observe', { path: target })
+      expect(execute).toHaveBeenCalledWith('create', { path: target, expectedRevision: expect.stringContaining('canvas:absent:'), open: true })
+      expect(await mock.api.vault.readFile(target)).toContain('nodes')
     } finally { stat.mockRestore(); execute.mockRestore(); await dispose() }
     expect(mock.api.interop.extensions.providers(FILE_TREE_CONTEXT_ITEM_V1)).toEqual([])
   })
@@ -47,6 +50,12 @@ describe('package host contracts', () => {
       expect(commands.length, `${id} did not register its commands`).toBeGreaterThan(0)
       expect(commands.filter((command) => command.acceptsInput && !command.inputSchema).map((command) => command.id)).toEqual([])
       expect(commands.every((command) => command.pluginId === id && command.id.startsWith(`${id}:`))).toBe(true)
+      for (const commandId of ['canvas:create-observe', 'canvas:get']) expect(commands.find(command => command.id === commandId)).toMatchObject({ sideEffect: 'read', recovery: 'observational', idempotent: true })
+      for (const commandId of ['canvas:create', 'canvas:edit', 'canvas:properties-edit']) {
+        expect(commands.find(command => command.id === commandId)).toMatchObject({ sideEffect: 'write', recovery: 'non-replayable', idempotent: false,
+          revisionRequirements: [{ argument: 'expectedRevision', inspectionCommand: commandId === 'canvas:create' ? 'canvas:create-observe' : 'canvas:get', description: expect.any(String) }] })
+      }
+      for (const commandId of ['canvas:create-new', 'canvas:open']) expect(commands.find(command => command.id === commandId)).toMatchObject({ sideEffect: 'write', recovery: 'non-replayable', agentVisibility: 'forbidden', outputSchema: expect.any(Object) })
       if (requiresWritePreview) {
         expect(mock.commands.filter((command) => command.sideEffect === 'write' && (!command.preview || !command.revision)).map((command) => command.id)).toEqual([])
       }

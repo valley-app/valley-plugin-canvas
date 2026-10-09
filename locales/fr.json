@@ -89,6 +89,7 @@
   "plugin.canvas.field.snapObjects": "Aligner sur les objets",
   "plugin.canvas.newTab.create": "Nouveau canevas",
   "canvas.error.preview": "L’aperçu du fichier est indisponible.",
+  "canvas.error.viewUnavailable": "La vue Canvas demandée est indisponible.",
   "canvas.align.left": "Aligner à gauche",
   "canvas.align.center": "Centrer horizontalement",
   "canvas.align.right": "Aligner à droite",
@@ -160,5 +161,11 @@
   "canvas.suggest.media": "Rechercher une image, une vidéo, un audio ou un PDF…",
   "canvas.suggest.empty": "Aucun fichier correspondant",
   "bookmark.view": "Vue du canevas",
-  "bookmark.item": "Élément sélectionné"
+  "bookmark.item": "Élément sélectionné",
+  "canvas.control.selectedCard": "Carte sélectionnée",
+  "canvas.control.selectedConnection": "Connexion sélectionnée",
+  "canvas.control.clearSelection": "Effacer la sélection",
+  "canvas.control.viewportX": "Position horizontale",
+  "canvas.control.viewportY": "Position verticale",
+  "canvas.error.viewBusy": "Terminez la modification, le geste ou la boîte de dialogue du canevas avant de changer les commandes de vue."
 }

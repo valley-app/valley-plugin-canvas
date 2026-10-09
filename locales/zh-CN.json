@@ -89,6 +89,7 @@
   "plugin.canvas.field.snapObjects": "对齐对象",
   "plugin.canvas.newTab.create": "新建画布",
   "canvas.error.preview": "文件预览不可用。",
+  "canvas.error.viewUnavailable": "所请求的 Canvas 视图不可用。",
   "canvas.align.left": "左对齐",
   "canvas.align.center": "水平居中",
   "canvas.align.right": "右对齐",
@@ -160,5 +161,11 @@
   "canvas.suggest.media": "查找图片、视频、音频或 PDF…",
   "canvas.suggest.empty": "没有匹配的文件",
   "bookmark.view": "画布视图",
-  "bookmark.item": "所选项目"
+  "bookmark.item": "所选项目",
+  "canvas.control.selectedCard": "选中的卡片",
+  "canvas.control.selectedConnection": "选中的连接",
+  "canvas.control.clearSelection": "清除选择",
+  "canvas.control.viewportX": "水平位置",
+  "canvas.control.viewportY": "垂直位置",
+  "canvas.error.viewBusy": "更改视图控件前，请完成当前画布编辑、手势操作或对话框。"
 }

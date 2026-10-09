@@ -50,8 +50,10 @@ describe('CanvasEditor', () => {
     mock = withHostUi(createMockValleyApi({ manifest: { id: 'canvas' }, files: { 'Test.canvas': serializeCanvas(oneCard) } }))
     initRuntime(mock.api)
     const off = registerCanvasSurfaces(mock.api)
-    const result = await mock.api.commands.execute('canvas:open', { path: 'Test.canvas', nodeIds: ['a'] })
-    expect(result.ok).toBe(true)
+    const command = mock.commands.find(entry => entry.id === 'open')!
+    expect(command).toMatchObject({ sideEffect: 'write', agentVisibility: 'forbidden', recovery: 'non-replayable' })
+    const input = command.input!.parse({ path: 'Test.canvas', nodeIds: ['a'] })
+    expect(await command.run(input, { caller: 'palette' })).toEqual({ value: { path: 'Test.canvas', nodeIds: ['a'], v: 1 }, revert: null })
     render(<CanvasEditor relPath="Test.canvas" tab={TAB} />)
     await waitFor(() => expect(canvasSession('Test.canvas')?.get().nodeIds).toEqual(['a']))
     const provider = mock.api.interop.extensions.providers(PLUGIN_SURFACE_V1)[0].extension
@@ -504,7 +506,7 @@ describe('CanvasEditor', () => {
   it('applies an API edit through the live guarded session and refuses read-only writes', async () => {
     mountWith({ 'Test.canvas': serializeCanvas(oneCard) })
     await screen.findByText('Hello canvas')
-    await act(async () => { await editCanvasTarget(mock.api, 'Test.canvas', { type: 'update-node', id: 'a', values: { text: 'Agent edit' } }) })
+    await act(async () => { await editCanvasTarget(mock.api, 'Test.canvas', { type: 'update-node', id: 'a', values: { text: 'Agent edit' } }, canvasSession('Test.canvas')!.get().revision) })
     expect(await screen.findByText('Agent edit')).toBeTruthy()
     expect(parseCanvas(await mock.api.vault.readFile('Test.canvas')).nodes[0]).toMatchObject({ text: 'Agent edit' })
     const menu = vi.spyOn(mock.api.ui, 'openMenu')
@@ -512,14 +514,14 @@ describe('CanvasEditor', () => {
     const items = menu.mock.calls.at(-1)?.[0] ?? []
     const lock = items.find((item) => 'label' in item && item.label === 'Read-only')
     await act(async () => { if (lock && 'onSelect' in lock) await lock.onSelect?.() })
-    await expect(editCanvasTarget(mock.api, 'Test.canvas', { type: 'delete-nodes', ids: ['a'] })).rejects.toThrow('read-only')
+    await expect(editCanvasTarget(mock.api, 'Test.canvas', { type: 'delete-nodes', ids: ['a'] }, canvasSession('Test.canvas')!.get().revision)).rejects.toThrow('read-only')
   })
 
   it('keeps the live scene and external file intact when an API save conflicts', async () => {
     mountWith({ 'Test.canvas': serializeCanvas(oneCard) })
     await screen.findByText('Hello canvas')
     vi.mocked(mock.api.vault.writeFileGuarded).mockResolvedValueOnce({ ok: false, reason: 'conflict', current: null })
-    await act(async () => { await expect(editCanvasTarget(mock.api, 'Test.canvas', { type: 'delete-nodes', ids: ['a'] })).rejects.toThrow('changed on disk') })
+    await act(async () => { await expect(editCanvasTarget(mock.api, 'Test.canvas', { type: 'delete-nodes', ids: ['a'] }, canvasSession('Test.canvas')!.get().revision)).rejects.toThrow('changed on disk') })
     expect(canvasSession('Test.canvas')?.get().data).toEqual(oneCard)
     expect(canvasDraft('Test.canvas')?.data).toEqual(oneCard)
     expect(parseCanvas(await mock.api.vault.readFile('Test.canvas'))).toEqual(oneCard)
@@ -549,7 +551,7 @@ describe('CanvasEditor', () => {
     await screen.findByRole('alert')
     expect(container.querySelector('.canvas-root')).toHaveClass('is-readonly')
     fireEvent.doubleClick(container.querySelector('.canvas-root')!, { clientX: 300, clientY: 200 })
-    await expect(editCanvasTarget(mock.api, 'Test.canvas', { type: 'delete-nodes', ids: ['a'] })).rejects.toThrow()
+    await expect(editCanvasTarget(mock.api, 'Test.canvas', { type: 'delete-nodes', ids: ['a'] }, canvasSession('Test.canvas')!.get().revision)).rejects.toThrow()
     await act(async () => { await mock.runBeforeUnload() })
     expect(mock.api.vault.writeFileGuarded).not.toHaveBeenCalled()
     expect(await mock.api.vault.readFile('Test.canvas')).toBe('{ "nodes": [ broken')

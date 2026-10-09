@@ -29,11 +29,17 @@ function scrollsInsideFocusedCard(e: WheelEvent): boolean {
 }
 
 export function useCanvasViewport(rootRef: RefObject<HTMLDivElement>) {
-  const [viewport, setViewport] = React.useState<Viewport>({ x: 0, y: 0, zoom: 1 })
+  const [viewport, publishViewport] = React.useState<Viewport>({ x: 0, y: 0, zoom: 1 })
   const viewportRef = React.useRef(viewport)
   const spaceRef = React.useRef(false)
   const [dimensions, setDimensions] = React.useState({ width: 0, height: 0 })
   viewportRef.current = viewport
+  const setViewport = React.useCallback((next: Viewport | ((current: Viewport) => Viewport)): void => {
+    const value = typeof next === 'function' ? next(viewportRef.current) : next
+    viewportRef.current = value
+    publishViewport(value)
+  }, [])
+  const setAxis = (axis: 'x' | 'y', value: number): void => setViewport(current => ({ ...current, [axis]: value }))
 
   const viewportSize = React.useCallback((): { width: number; height: number } | null => {
     const root = rootRef.current
@@ -114,5 +120,5 @@ export function useCanvasViewport(rootRef: RefObject<HTMLDivElement>) {
     }
   }, [rootRef])
 
-  return { viewport, setViewport, viewportRef, spaceRef, viewportSize, dimensions, localPoint, worldAt }
+  return { viewport, setViewport, setAxis, viewportRef, spaceRef, viewportSize, dimensions, localPoint, worldAt }
 }

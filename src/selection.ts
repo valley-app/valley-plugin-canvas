@@ -4,21 +4,29 @@ import { nodeById, type CanvasData } from './canvasModel'
 import { nodeRect, rectContains } from './geometry'
 
 export function useCanvasSelection(modelRef: MutableRefObject<CanvasData>) {
-  const [selection, setSelection] = React.useState<Set<string>>(new Set())
-  const [selectedEdge, setSelectedEdge] = React.useState<string | null>(null)
-  const [editingId, setEditingId] = React.useState<string | null>(null)
-  const [editingEdgeLabel, setEditingEdgeLabel] = React.useState<string | null>(null)
+  const [selection, publishSelection] = React.useState<Set<string>>(new Set())
+  const [selectedEdge, publishSelectedEdge] = React.useState<string | null>(null)
+  const [editingId, publishEditingId] = React.useState<string | null>(null)
+  const [editingEdgeLabel, publishEditingEdgeLabel] = React.useState<string | null>(null)
   const selectionRef = React.useRef(selection)
   const selectedEdgeRef = React.useRef<string | null>(null)
   const editingRef = React.useRef<string | null>(null)
+  const editingEdgeRef = React.useRef<string | null>(null)
   selectionRef.current = selection
   selectedEdgeRef.current = selectedEdge
   editingRef.current = editingId
+  editingEdgeRef.current = editingEdgeLabel
 
-  const replaceSelection = (ids: Set<string>): void => {
+  const setSelection = React.useCallback((ids: Set<string>): void => {
     selectionRef.current = ids
-    setSelection(ids)
-  }
+    publishSelection(ids)
+  }, [])
+  const setSelectedEdge = React.useCallback((id: string | null): void => { selectedEdgeRef.current = id; publishSelectedEdge(id) }, [])
+  const setEditingId = React.useCallback((id: string | null): void => { editingRef.current = id; publishEditingId(id) }, [])
+  const setEditingEdgeLabel = React.useCallback((id: string | null): void => { editingEdgeRef.current = id; publishEditingEdgeLabel(id) }, [])
+  const selectSingleNode = (id: string): void => { setSelection(new Set([id])); setSelectedEdge(null) }
+  const selectSingleEdge = (id: string): void => { setSelection(new Set()); setSelectedEdge(id) }
+  const clearSelection = (): void => { setSelection(new Set()); setSelectedEdge(null) }
 
   const expandWithGroups = (ids: Set<string>): Set<string> => {
     const data = modelRef.current
@@ -35,5 +43,5 @@ export function useCanvasSelection(modelRef: MutableRefObject<CanvasData>) {
     return out
   }
 
-  return { selection, setSelection, selectionRef, selectedEdge, setSelectedEdge, selectedEdgeRef, editingId, setEditingId, editingRef, editingEdgeLabel, setEditingEdgeLabel, replaceSelection, expandWithGroups }
+  return { selection, setSelection, selectionRef, selectedEdge, setSelectedEdge, selectedEdgeRef, editingId, setEditingId, editingRef, editingEdgeLabel, setEditingEdgeLabel, editingEdgeRef, replaceSelection: setSelection, selectSingleNode, selectSingleEdge, clearSelection, expandWithGroups }
 }

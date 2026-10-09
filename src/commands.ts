@@ -1,8 +1,11 @@
 import { guardedCreatedFileRevert, type ValleyPluginApi } from '@valley/plugin-sdk'
-import type { FileBaseline } from '@valley/plugin-sdk/types'
-import { EMPTY_CANVAS, addNode, addEdge, createTextNode, createFileNode, createLinkNode, createGroupNode, duplicateNodes, genId, removeNodes, removeEdges, reorderNodes, updateNode, parseCanvasDocument, serializeCanvas, type CanvasData, type CanvasNode, type CanvasEdge } from './canvasModel'
-import { isAllowedExternalUrl, normalizeRelPathOpt } from '@valley/plugin-sdk/paths'
-import { canvasDraft, canvasSession } from './session'
+import type { CommandContext } from '@valley/plugin-sdk/commands'
+import { EMPTY_CANVAS, parseCanvasDocument, serializeCanvas, type CanvasData } from './canvasModel'
+import { normalizeRelPathOpt } from '@valley/plugin-sdk/paths'
+import { canvasDraft, canvasSession, type CanvasSession } from './session'
+import { applyCanvasOperation, canvasOperationSchema, objectSchema, stringSchema, record, requiredString } from './operations'
+export { applyCanvasOperation, canvasNodeFields, canvasEdgeFields } from './operations'
+import { canvasDataSchema } from './automationContracts'
 import { captureCanvasOwner, type CanvasOwner } from './runtime'
 
 /** Parent folder of the active file (or vault root when nothing is open). */
@@ -13,33 +16,48 @@ function activeFolder(api: ValleyPluginApi): string {
   return slash > 0 ? active.slice(0, slash) : ''
 }
 
-/** Atomically create the first free `Untitled[.n].canvas` in `folder`. */
-async function createCanvasFile(
-  api: ValleyPluginApi,
-  folder: string,
-  owner: CanvasOwner,
-  assertActive: () => void
-): Promise<{ relPath: string; baseline: FileBaseline }> {
-  const prefix = folder ? `${folder}/` : ''
-  for (let n = 0; n < 1000; n++) {
-    const name = n === 0 ? 'Untitled.canvas' : `Untitled ${n}.canvas`
-    const relPath = `${prefix}${name}`
-    assertActive()
-    const written = await owner.run(() => { assertActive(); return api.vault.writeFileGuarded(relPath, EMPTY_CANVAS, null) })
-    if (written.ok) return { relPath, baseline: written.baseline }
-    assertActive()
-    if (written.reason === 'error') throw new Error(`Could not create ${relPath}`)
+const absence = new WeakMap<CanvasOwner, Map<string, string>>()
+function missingRevisions(owner: CanvasOwner): Map<string, string> { let values = absence.get(owner); if (!values) { values = new Map(); absence.set(owner, values) } return values }
+const mutationOutput = objectSchema({ path: stringSchema, data: canvasDataSchema, revision: { type: 'string' } }, ['path', 'data', 'revision'])
+async function observeCreation(api: ValleyPluginApi, path: string, owner: CanvasOwner, assertActive: () => void) {
+  if (!path.endsWith('.canvas') || normalizeRelPathOpt(path) !== path) throw new Error('Expected a vault-relative canvas path.')
+  const file = await owner.run(() => { assertActive(); return api.vault.readFileBaseline(path) })
+  assertActive()
+  if (!file || file.baseline || canvasSession(path, owner) || canvasDraft(path, owner)) throw new Error('The canvas path is occupied or has a retained draft.')
+  const draft = await owner.run(() => api.vault.drafts.read(path, 'editor'))
+  assertActive()
+  if (draft) throw new Error('The canvas has an unsaved draft.')
+  const entries = missingRevisions(owner)
+  let expectedRevision = entries.get(path)
+  if (!expectedRevision) {
+    if (entries.size >= 256) entries.delete(entries.keys().next().value!)
+    expectedRevision = `canvas:absent:${Date.now().toString(36)}:${Math.random().toString(36).slice(2)}`
+    entries.set(path, expectedRevision)
   }
-  throw new Error(`Could not find a free canvas name in ${folder || 'the vault root'}`)
+  return { path, expectedRevision }
 }
 
-/**
- * `canvas:create` — write an empty JSONCanvas next to the active file and open
- * it. Undo removes only the exact baseline created here; an edited file wins.
- */
+export async function createCanvasFromUi(api: ValleyPluginApi, folder = activeFolder(api), owner = captureCanvasOwner(api)): Promise<void> {
+  for (let n = 0; n < 1000; n++) {
+    owner.assertActive()
+    const path = `${folder ? `${folder}/` : ''}Untitled${n ? ` ${n}` : ''}.canvas`
+    const file = await owner.run(() => api.vault.stat(path))
+    owner.assertActive()
+    if (file) continue
+    const observed = await api.commands.executeOwn('create-observe', { path })
+    owner.assertActive()
+    if (!observed.ok) throw new Error(observed.error.message)
+    const created = await api.commands.executeOwn('create', { ...record(observed.value), open: true })
+    if (!created.ok) throw new Error(created.error.message)
+    return
+  }
+  throw new Error('Could not find a free canvas name.')
+}
+
 export function registerCanvasCommands(api: ValleyPluginApi, owner = captureCanvasOwner(api)): () => void {
   let registered = true
   const assertActive = (): void => { owner.assertActive(); if (!registered) throw new Error('The canvas commands are no longer registered.') }
+  const guard = async (context: CommandContext): Promise<void> => { assertActive(); if (context.cancellation?.aborted) throw Object.assign(new Error('The canvas operation was cancelled.'), { outcome: 'not-applied', code: 'CANCELLED' }); if (context.validateBeforeRun && !await context.validateBeforeRun()) throw Object.assign(new Error('Canvas authorization is no longer current.'), { outcome: 'not-applied', code: 'AUTHORIZATION_CHANGED' }); assertActive(); if (context.cancellation?.aborted) throw Object.assign(new Error('The canvas operation was cancelled.'), { outcome: 'not-applied', code: 'CANCELLED' }) }
   const guardedVault = {
     ...api.vault,
     restoreTrashed: (...args: Parameters<typeof api.vault.restoreTrashed>) => owner.run(() => { assertActive(); return api.vault.restoreTrashed(...args) }),
@@ -47,117 +65,42 @@ export function registerCanvasCommands(api: ValleyPluginApi, owner = captureCanv
     trashFileGuarded: (...args: Parameters<typeof api.vault.trashFileGuarded>) => owner.run(() => { assertActive(); return api.vault.trashFileGuarded(...args) }),
     writeFileGuarded: (...args: Parameters<typeof api.vault.writeFileGuarded>) => owner.run(() => { assertActive(); return api.vault.writeFileGuarded(...args) })
   }
-
-  const offCreate = api.commands.register<{ folder?: string }, { relPath: string }, 'write'>({
-    id: 'create',
-    label: 'Canvas: Create new canvas', labelKey: 'auto.7b18787efddd',
-    sideEffect: 'write',
-    revision: ({ folder }) => { assertActive(); return { folder: folder ?? activeFolder(api) } },
-    preview: ({ folder }) => { assertActive(); return { action: 'create-canvas', folder: folder ?? activeFolder(api) } },
-    input: { schema: { type: 'object', properties: { folder: { type: 'string' } }, additionalProperties: false }, parse: (raw) => { const folder = (raw as { folder?: unknown } | undefined)?.folder; if (folder !== undefined && (typeof folder !== 'string' || (folder && normalizeRelPathOpt(folder) !== folder))) throw new Error('Expected a vault folder.'); return { folder: folder as string | undefined } } },
-    run: async ({ folder }) => {
+  const offNew = api.commands.register({ id: 'create-new', label: 'Canvas: Create new canvas', labelKey: 'auto.7b18787efddd', sideEffect: 'write', agentVisibility: 'forbidden', recovery: 'non-replayable', idempotent: false, outputSchema: { type: 'null' }, revision: () => ({ folder: activeFolder(api) }), preview: () => ({ action: 'create-canvas', folder: activeFolder(api), open: true }), run: async (_input, context) => { await guard(context); await createCanvasFromUi(api, undefined, owner); return { value: null, revert: null } } })
+  const offObserve = api.commands.register({ id: 'create-observe', label: 'Canvas: Observe an unused path', paletteSafe: false, sideEffect: 'read', recovery: 'observational', idempotent: true, input: { schema: objectSchema({ path: stringSchema }, ['path']), parse: raw => ({ path: requiredString(record(raw).path) }) }, outputSchema: objectSchema({ path: stringSchema, expectedRevision: stringSchema }, ['path', 'expectedRevision']), run: ({ path }) => observeCreation(api, path, owner, assertActive) })
+  const offCreate = api.commands.register({
+    id: 'create', label: 'Canvas: Create new canvas', labelKey: 'auto.7b18787efddd', paletteSafe: false, sideEffect: 'write',
+    recovery: 'non-replayable', idempotent: false, limits: { files: 1 }, revisionRequirements: [{ argument: 'expectedRevision', inspectionCommand: 'canvas:create-observe', description: 'Use the observed absence revision for this exact canvas path in the current owner session.' }],
+    input: { schema: objectSchema({ path: stringSchema, expectedRevision: stringSchema, open: { type: 'boolean' } }, ['path', 'expectedRevision']), parse: raw => { const input = record(raw); if (input.open !== undefined && typeof input.open !== 'boolean') throw new Error('Expected an explicit open preference.'); return { path: requiredString(input.path), expectedRevision: requiredString(input.expectedRevision), open: input.open === true } } },
+    outputSchema: objectSchema({ relPath: stringSchema, revision: stringSchema, verified: { const: true } }, ['relPath', 'revision', 'verified']),
+    revision: ({ path }) => observeCreation(api, path, owner, assertActive), preview: ({ path, open }) => ({ action: 'create-canvas', path, open }),
+    run: async ({ path, expectedRevision, open }, context) => {
       assertActive()
-      const { relPath, baseline } = await createCanvasFile(api, folder ?? activeFolder(api), owner, assertActive)
-      if (registered && owner.isActive()) await owner.run(() => { assertActive(); return api.workspace.openFile(relPath) })
-      return {
-        value: { relPath },
-        revert: guardedCreatedFileRevert(guardedVault, relPath, EMPTY_CANVAS, baseline, 'Create canvas')
-      }
+      if (missingRevisions(owner).get(path) !== expectedRevision) throw new Error('Inspect the unused canvas path before creating it.')
+      const observed = await observeCreation(api, path, owner, assertActive)
+      if (observed.expectedRevision !== expectedRevision) throw new Error('The canvas path changed.')
+      await guard(context)
+      const written = await owner.run(() => { assertActive(); return api.vault.writeFileGuarded(path, EMPTY_CANVAS, null) })
+      if (!written.ok) throw Object.assign(new Error('The canvas could not be created.'), { outcome: written.reason === 'conflict' ? 'not-applied' : 'unknown', code: written.reason === 'conflict' ? 'REVISION_CONFLICT' : 'OUTCOME_UNKNOWN' })
+      missingRevisions(owner).delete(path)
+      try {
+        const confirmed = await owner.run(() => api.vault.readFileBaseline(path))
+        assertActive()
+        if (confirmed?.content !== EMPTY_CANVAS || confirmed.baseline?.hash !== written.baseline.hash || confirmed.baseline.size !== written.baseline.size) throw new Error('The created canvas could not be verified.')
+        if (open) { await guard(context); await owner.run(() => { assertActive(); return api.workspace.openFile(path) }) }
+      } catch (error) { throw Object.assign(error instanceof Error ? error : new Error(String(error)), { outcome: 'unknown', code: 'OUTCOME_UNKNOWN' }) }
+      return { value: { relPath: path, revision: `canvas:file:${written.baseline.hash}:${written.baseline.size}:${written.baseline.mtimeMs}`, verified: true }, revert: guardedCreatedFileRevert(guardedVault, path, EMPTY_CANVAS, written.baseline, 'Create canvas') }
     }
   })
-  const offGet = api.commands.register({ id: 'get', label: 'Canvas: Inspect canvas', labelKey: 'canvas.command.get', paletteSafe: false, sideEffect: 'read', input: { schema: objectSchema({ path: stringSchema }, ['path']), parse: (raw) => ({ path: requiredString(record(raw).path) }) }, run: async ({ path }) => { const target = await readCanvasTarget(api, path, owner, assertActive); return { path, data: target.data, revision: target.revision } } })
-  const offEdit = api.commands.register({ id: 'edit', label: 'Canvas: Edit canvas', labelKey: 'canvas.command.edit', paletteSafe: false, sideEffect: 'write', input: { schema: objectSchema({ path: stringSchema, operation: canvasOperationSchema, expectedRevision: { type: 'string' } }, ['path', 'operation']), parse: (raw) => { const input = record(raw); if (input.expectedRevision !== undefined && typeof input.expectedRevision !== 'string') throw new Error('Expected a canvas revision.'); return { path: requiredString(input.path), operation: record(input.operation), expectedRevision: input.expectedRevision as string | undefined } } }, revision: async ({ path }) => (await readCanvasTarget(api, path, owner, assertActive)).revision, preview: ({ path, operation }) => ({ path, operation }), run: ({ path, operation, expectedRevision }) => editCanvasTarget(api, path, operation, expectedRevision, owner, assertActive) })
-  return () => { registered = false; offCreate(); offGet(); offEdit() }
-
+  const offGet = api.commands.register({ id: 'get', label: 'Canvas: Inspect canvas', labelKey: 'canvas.command.get', paletteSafe: false, sideEffect: 'read', recovery: 'observational', idempotent: true, input: { schema: objectSchema({ path: stringSchema }, ['path']), parse: raw => ({ path: requiredString(record(raw).path) }) }, outputSchema: mutationOutput, run: async ({ path }) => { const target = await readCanvasTarget(api, path, owner, assertActive); return { path, data: target.data, revision: target.revision } } })
+  const offEdit = api.commands.register({ id: 'edit', label: 'Canvas: Edit canvas', labelKey: 'canvas.command.edit', paletteSafe: false, sideEffect: 'write', recovery: 'non-replayable', idempotent: false, limits: { operations: 1 }, revisionRequirements: [{ argument: 'expectedRevision', inspectionCommand: 'canvas:get', description: 'Use the observed document or editor revision for this exact canvas path.' }], input: { schema: objectSchema({ path: stringSchema, operation: canvasOperationSchema, expectedRevision: { type: 'string', minLength: 1 } }, ['path', 'operation', 'expectedRevision']), parse: raw => { const input = record(raw); return { path: requiredString(input.path), operation: record(input.operation), expectedRevision: requiredString(input.expectedRevision) } } }, outputSchema: mutationOutput, revision: async ({ path }) => (await readCanvasTarget(api, path, owner, assertActive)).revision, preview: ({ path, operation }) => ({ path, operation }), run: ({ path, operation, expectedRevision }, context) => editCanvasTarget(api, path, operation, expectedRevision, owner, assertActive, () => guard(context)) })
+  return () => { registered = false; missingRevisions(owner).clear(); offNew(); offObserve(); offCreate(); offGet(); offEdit() }
 }
 
-export const canvasNodeFields = { x: { type: 'number' }, y: { type: 'number' }, width: { type: 'number', exclusiveMinimum: 0 }, height: { type: 'number', exclusiveMinimum: 0 }, color: { type: 'string' }, text: { type: 'string' }, file: { type: 'string' }, subpath: { type: 'string' }, url: { type: 'string' }, label: { type: 'string' }, background: { type: 'string' }, backgroundStyle: { type: 'string', enum: ['cover', 'ratio', 'repeat'] } }
-export const canvasEdgeFields = { fromNode: { type: 'string' }, toNode: { type: 'string' }, fromSide: { type: 'string', enum: ['top', 'right', 'bottom', 'left'] }, toSide: { type: 'string', enum: ['top', 'right', 'bottom', 'left'] }, fromEnd: { type: 'string', enum: ['none', 'arrow'] }, toEnd: { type: 'string', enum: ['none', 'arrow'] }, color: { type: 'string' }, label: { type: 'string' } }
-const objectSchema = (properties: Record<string, unknown>, required: string[] = []) => ({ type: 'object', properties, required, additionalProperties: false })
-const stringSchema = { type: 'string', minLength: 1 }
-const idsSchema = { type: 'array', items: stringSchema, minItems: 1, uniqueItems: true }
-export const canvasOperationSchema = { oneOf: [
-  objectSchema({ type: { const: 'add-node' }, node: objectSchema({ id: stringSchema, type: { type: 'string', enum: ['text', 'file', 'link', 'group'] }, ...canvasNodeFields }, ['type', 'x', 'y']) }, ['type', 'node']),
-  objectSchema({ type: { const: 'update-node' }, id: stringSchema, values: objectSchema(canvasNodeFields) }, ['type', 'id', 'values']),
-  objectSchema({ type: { const: 'add-edge' }, edge: objectSchema({ id: stringSchema, ...canvasEdgeFields }, ['fromNode', 'toNode']) }, ['type', 'edge']),
-  objectSchema({ type: { const: 'update-edge' }, id: stringSchema, values: objectSchema(canvasEdgeFields) }, ['type', 'id', 'values']),
-  ...['delete-nodes', 'delete-edges', 'duplicate-nodes'].map((type) => objectSchema({ type: { const: type }, ids: idsSchema }, ['type', 'ids'])),
-  objectSchema({ type: { const: 'reorder-nodes' }, ids: idsSchema, to: { type: 'string', enum: ['front', 'back'] } }, ['type', 'ids', 'to'])
-] }
-
-function record(raw: unknown): Record<string, unknown> { if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('Expected an object.'); return raw as Record<string, unknown> }
-function requiredString(raw: unknown): string { if (typeof raw !== 'string' || !raw.trim()) throw new Error('Expected a nonempty id or path.'); return raw }
-function checkFields(raw: unknown, allowed: Record<string, unknown>): Record<string, unknown> {
-  const values = record(raw)
-  for (const [key, value] of Object.entries(values)) {
-    if (!(key in allowed)) throw new Error(`Unsupported canvas field "${key}".`)
-    if (['x', 'y', 'width', 'height'].includes(key)) { if (typeof value !== 'number' || !Number.isFinite(value) || (['width', 'height'].includes(key) && value <= 0)) throw new Error('Invalid card geometry.') }
-    else if (typeof value !== 'string') throw new Error(`Expected text for "${key}".`)
-    const choices = (allowed[key] as { enum?: string[] }).enum
-    if (choices && !choices.includes(String(value))) throw new Error(`Invalid canvas ${key}.`)
-  }
-  for (const key of ['file', 'background']) if (values[key] && normalizeRelPathOpt(values[key]) !== values[key]) throw new Error('Invalid canvas file path.')
-  if (values.url && !isAllowedExternalUrl(String(values.url))) throw new Error('Unsafe canvas link.')
-  if (values.color && !/^(?:[1-6]|#[0-9a-f]{6})$/i.test(String(values.color))) throw new Error('Invalid canvas color.')
-  return values
-}
-
-
-function fieldsForNode(type: string): Record<string, unknown> {
-  const keys = ['x', 'y', 'width', 'height', 'color', ...(type === 'text' ? ['text'] : type === 'file' ? ['file', 'subpath'] : type === 'link' ? ['url'] : type === 'group' ? ['label', 'background', 'backgroundStyle'] : [])]
-  return Object.fromEntries(Object.entries(canvasNodeFields).filter(([key]) => keys.includes(key)))
-}
-
-export function applyCanvasOperation(data: CanvasData, raw: unknown): CanvasData {
-  const operation = record(raw)
-  const type = requiredString(operation.type)
-  const allowedKeys = type === 'add-node' ? ['type', 'node'] : type === 'add-edge' ? ['type', 'edge'] : type.startsWith('update-') ? ['type', 'id', 'values'] : type === 'reorder-nodes' ? ['type', 'ids', 'to'] : ['type', 'ids']
-  if (Object.keys(operation).some((key) => !allowedKeys.includes(key))) throw new Error('Unsupported canvas operation argument.')
-  const id = typeof operation.id === 'string' ? operation.id : ''
-  const ids = Array.isArray(operation.ids) && operation.ids.every((value) => typeof value === 'string') ? operation.ids as string[] : []
-  const needNodes = (targets: string[]): void => { if (!targets.length || new Set(targets).size !== targets.length || targets.some((target) => !data.nodes.some((node) => node.id === target))) throw new Error('A targeted canvas card no longer exists.') }
-  const needEdges = (targets: string[]): void => { if (!targets.length || targets.some((target) => !data.edges.some((edge) => edge.id === target))) throw new Error('A targeted connection no longer exists.') }
-  switch (type) {
-    case 'add-node': {
-      const node = record(operation.node)
-      const kind = requiredString(node.type)
-      const { id: requestedId, type: _kind, ...rawValues } = node
-      const values = checkFields(rawValues, fieldsForNode(kind))
-      if (typeof values.x !== 'number' || typeof values.y !== 'number') throw new Error('Expected card coordinates.')
-      const created = kind === 'text' ? createTextNode(values.x, values.y, typeof values.text === 'string' ? values.text : '') : kind === 'file' ? createFileNode(values.x, values.y, requiredString(values.file)) : kind === 'link' ? createLinkNode(values.x, values.y, requiredString(values.url)) : kind === 'group' ? createGroupNode(values.x, values.y, Number(values.width ?? 400), Number(values.height ?? 300), typeof values.label === 'string' ? values.label : undefined) : null
-      if (!created) throw new Error('Unsupported canvas card type.')
-      const next = { ...created, ...values, ...(requestedId === undefined ? {} : { id: requiredString(requestedId) }) } as CanvasNode
-      if (data.nodes.some((entry) => entry.id === next.id)) throw new Error('The canvas card id already exists.')
-      return addNode(data, next)
-    }
-    case 'update-node': needNodes([id]); return updateNode(data, id, checkFields(operation.values, fieldsForNode(data.nodes.find((node) => node.id === id)!.type)))
-    case 'delete-nodes': needNodes(ids); return removeNodes(data, new Set(ids))
-    case 'duplicate-nodes': needNodes(ids); return duplicateNodes(data, new Set(ids)).data
-    case 'reorder-nodes': needNodes(ids); if (operation.to !== 'front' && operation.to !== 'back') throw new Error('Expected front or back order.'); return reorderNodes(data, new Set(ids), operation.to)
-    case 'add-edge': {
-      const edge = record(operation.edge)
-      const { id: requestedId, ...rawValues } = edge
-      const values = checkFields(rawValues, canvasEdgeFields)
-      needNodes([requiredString(values.fromNode)]); needNodes([requiredString(values.toNode)])
-      const edgeId = requestedId === undefined ? genId() : requiredString(requestedId)
-      if (data.edges.some((entry) => entry.id === edgeId)) throw new Error('The connection id already exists.')
-      return addEdge(data, { ...values, id: edgeId } as CanvasEdge)
-    }
-    case 'update-edge': {
-      needEdges([id]); const values = checkFields(operation.values, canvasEdgeFields)
-      for (const key of ['fromNode', 'toNode']) if (values[key] !== undefined) needNodes([requiredString(values[key])])
-      return { ...data, edges: data.edges.map((edge) => edge.id === id ? { ...edge, ...values } : edge) }
-    }
-    case 'delete-edges': needEdges(ids); return removeEdges(data, new Set(ids))
-    default: throw new Error('Unsupported canvas operation.')
-  }
-}
-
-export async function readCanvasTarget(api: ValleyPluginApi, path: string, owner = captureCanvasOwner(api), assertActive = owner.assertActive) {
+export async function readCanvasTarget(api: ValleyPluginApi, path: string, owner = captureCanvasOwner(api), assertActive = owner.assertActive, exactSession?: () => CanvasSession) {
   assertActive()
   if (!path.endsWith('.canvas') || normalizeRelPathOpt(path) !== path) throw new Error('Expected a vault-relative canvas path.')
-  const session = canvasSession(path, owner)
-  if (session) { const snapshot = session.get(); if (!snapshot.ready) throw new Error('The canvas is still loading.'); if (snapshot.invalid) throw new Error('The canvas file is invalid.'); return { data: snapshot.data, revision: snapshot.revision, baseline: null, session } }
+  const session = exactSession ? exactSession() : canvasSession(path, owner)
+  if (session) { const snapshot = session.get(); if (!snapshot.ready) throw new Error('The canvas is still loading.'); if (snapshot.invalid) throw new Error('The canvas file is invalid.'); return { data: snapshot.data, revision: snapshot.revision, baseline: null, session, exactSession } }
   if (canvasDraft(path, owner)) throw new Error('The canvas has an unsaved draft. Reopen it and resolve the save error before editing.')
   const recovery = await owner.run(() => { assertActive(); return api.vault.drafts.read(path, 'editor') })
   assertActive()
@@ -169,19 +112,33 @@ export async function readCanvasTarget(api: ValleyPluginApi, path: string, owner
   const parsed = parseCanvasDocument(file.content)
   if (!parsed.valid) throw new Error('The canvas file is invalid.')
   const data = parsed.data
-  return { data, revision: serializeCanvas(data), baseline: file.baseline, session: undefined }
+  return { data, revision: serializeCanvas(data), baseline: file.baseline, session: undefined, exactSession: undefined }
 }
-async function commitTarget(owner: CanvasOwner, path: string, data: CanvasData, previous: Awaited<ReturnType<typeof readCanvasTarget>>, assertActive: () => void): Promise<void> {
+async function commitTarget(owner: CanvasOwner, path: string, data: CanvasData, previous: Awaited<ReturnType<typeof readCanvasTarget>>, assertActive: () => void, beforeWrite?: () => Promise<void>, beforeDispatch?: () => void): Promise<void> {
   assertActive()
-  if (canvasSession(path, owner) !== previous.session) throw new Error('The canvas changed. Inspect its active draft before editing.')
-  if (previous.session) await owner.run(() => { assertActive(); return previous.session!.commit(data, previous.revision) })
+  if ((previous.exactSession ? previous.exactSession() : canvasSession(path, owner)) !== previous.session) throw new Error('The canvas changed. Inspect its active draft before editing.')
+  const assertDispatch = (): void => {
+    try {
+      assertActive()
+      if ((previous.exactSession ? previous.exactSession() : canvasSession(path, owner)) !== previous.session) throw new Error('The canvas changed. Inspect its active draft before editing.')
+      beforeDispatch?.()
+    } catch (error) { throw Object.assign(error instanceof Error ? error : new Error(String(error)), { outcome: 'not-applied' }) }
+  }
+  if (previous.session) await owner.run(() => { assertActive(); return previous.session!.commit(data, previous.revision, beforeWrite, assertDispatch) })
   else {
-    const result = await owner.run(() => {
+    const result = await owner.run(async () => {
+      if (beforeWrite) await beforeWrite()
       assertActive()
       if (canvasSession(path, owner) || canvasDraft(path, owner)) throw new Error('The canvas changed. Inspect its active draft before editing.')
+      assertDispatch()
       return owner.api.vault.writeFileGuarded(path, serializeCanvas(data), previous.baseline)
     })
-    if (!result.ok) throw new Error('The canvas changed or could not be saved. Your request was not applied.')
+    if (!result.ok) throw Object.assign(new Error('The canvas changed or could not be saved.'), { outcome: result.reason === 'conflict' ? 'not-applied' : 'unknown', code: result.reason === 'conflict' ? 'REVISION_CONFLICT' : 'OUTCOME_UNKNOWN' })
+    try {
+      const confirmed = await owner.api.vault.readFileBaseline(path)
+      assertActive()
+      if (confirmed?.content !== serializeCanvas(data) || confirmed.baseline?.hash !== result.baseline.hash) throw new Error('The resulting canvas could not be verified.')
+    } catch (error) { throw Object.assign(error instanceof Error ? error : new Error(String(error)), { outcome: 'unknown', code: 'OUTCOME_UNKNOWN' }) }
   }
 }
 export async function restoreCanvasTarget(owner: CanvasOwner, path: string, data: CanvasData, revision: string, assertActive = owner.assertActive): Promise<void> {
@@ -190,15 +147,15 @@ export async function restoreCanvasTarget(owner: CanvasOwner, path: string, data
   if (current.revision !== revision) throw new Error('The canvas changed after this edit. Undo would overwrite newer work.')
   await commitTarget(owner, path, captured, current, assertActive)
 }
-export async function editCanvasTarget(api: ValleyPluginApi, path: string, operation: unknown, expectedRevision?: string, owner = captureCanvasOwner(api), assertActive = owner.assertActive) {
+export async function editCanvasTarget(api: ValleyPluginApi, path: string, operation: unknown, expectedRevision: string, owner = captureCanvasOwner(api), assertActive = owner.assertActive, beforeWrite?: () => Promise<void>, exactSession?: () => CanvasSession, beforeDispatch?: () => void) {
   assertActive()
   const accepted = structuredClone(operation)
-  const previous = await readCanvasTarget(api, path, owner, assertActive)
-  if (expectedRevision !== undefined && expectedRevision !== previous.revision) throw new Error('The canvas changed. Inspect it again before editing.')
+  const previous = await readCanvasTarget(api, path, owner, assertActive, exactSession)
+  if (!expectedRevision || expectedRevision !== previous.revision) throw new Error('The canvas changed. Inspect it again before editing.')
   const before = structuredClone(previous.data)
   const next = applyCanvasOperation(before, accepted)
   const nextRevision = serializeCanvas(next)
-  await commitTarget(owner, path, next, previous, assertActive)
+  await commitTarget(owner, path, next, previous, assertActive, beforeWrite, beforeDispatch)
   const after = structuredClone(next)
   return { value: { path, data: next, revision: nextRevision }, revert: { label: 'Edit canvas', run: () => restoreCanvasTarget(owner, path, before, nextRevision, assertActive), reapply: () => restoreCanvasTarget(owner, path, after, previous.revision, assertActive) } }
 }

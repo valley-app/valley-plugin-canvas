@@ -22,7 +22,7 @@ export function canvasNewTabEntry(run: () => void | Promise<void>): NewTabEntry 
     label: 'New canvas',
     icon: 'shapes',
     // The bare command id — the host prefixes it with the owner it recorded.
-    hotkeyCommand: 'create',
+    hotkeyCommand: 'create-new',
     run
   }
 }

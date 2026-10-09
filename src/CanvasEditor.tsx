@@ -1,6 +1,7 @@
 import { registerCanvasSession, pendingCanvasView, notifyCanvas, type CanvasSession } from './session'
 import { canvasDocument } from './document'
-import { restoreCanvasTarget } from './commands'
+import { applyCanvasSelectionAction } from './operations'
+import type { MountedPluginView } from '@valley/plugin-sdk'
 import { React, captureCanvasOwner, type CanvasOwner } from './runtime'
 import { classifyFilePath } from '@valley/plugin-sdk/fileTypes'
 import { useCanvasViewport } from './viewport'
@@ -46,6 +47,8 @@ import {
   type Point,
   type Rect,
   ZOOMED_OUT_LOG2,
+  MIN_ZOOM,
+  MAX_ZOOM,
   boundsOf,
   fitView,
   gridSpacing,
@@ -69,13 +72,13 @@ import {
 /** One press of the zoom buttons, in log2 octaves. */
 const ZOOM_BUTTON_STEP = 0.5
 /** Room kept between a selection and the menu above it, in screen pixels. */
-const GROUP_PADDING = 20
 const isMac = typeof navigator !== 'undefined' && /mac/i.test(navigator.platform)
 type MenuItems = Parameters<CanvasOwner['api']['ui']['openMenu']>[0]
 
 interface ViewProps {
   relPath: string
   tab?: unknown
+  mountedView?: MountedPluginView
   /** Set when the host embeds the file in another document. */
   thisPath?: string
   viewName?: string
@@ -89,35 +92,43 @@ const CanvasView = (props: ViewProps): ReturnType<typeof React.createElement> =>
   const [owner] = React.useState(() => captureCanvasOwner())
   const embedded = !props.tab || Boolean(props.thisPath && props.thisPath !== props.relPath)
   if (embedded) return <CanvasMinimap owner={owner} relPath={props.relPath} />
-  return <CanvasEditor relPath={props.relPath} owner={owner} />
+  return <CanvasEditor relPath={props.relPath} owner={owner} mountedView={props.mountedView} />
 }
 
 type Modal =
   | { type: 'pick'; kind: 'note' | 'media'; onPick: (path: string) => void }
 
-const CanvasEditor = ({ relPath, owner }: { relPath: string; owner: CanvasOwner }): ReturnType<typeof React.createElement> => {
+const CanvasEditor = ({ relPath, owner, mountedView }: { relPath: string; owner: CanvasOwner; mountedView?: MountedPluginView }): ReturnType<typeof React.createElement> => {
   const api = owner.api
   const document = React.useMemo(() => canvasDocument(owner, relPath), [owner, relPath])
-  const context = React.useMemo(() => ({ mounted: true }), [document])
+  const context = React.useMemo(() => ({ mounted: true, signature: '', revision: 0, draftRevision: 0, draftSignature: '', rawDrafts: new Set<string>() }), [document, mountedView?.mountId, mountedView?.generation])
   const latestContext = React.useRef(context)
   latestContext.current = context
   const isViewActive = React.useCallback(() => context.mounted && latestContext.current === context && owner.isActive(), [context, owner])
+  const guardDraftInput = (event: React.SyntheticEvent): void => {
+    if (!isViewActive() || document.isFrozen()) { event.preventDefault(); event.stopPropagation(); return }
+    context.draftRevision++; notifyCanvas(owner)
+  }
   const snapshot = React.useSyncExternalStore(document.subscribe, document.get, document.get)
   const { data: model, error: saveError } = snapshot
   const rootRef = React.useRef<HTMLDivElement>(null)
   const viewportState = useCanvasViewport(rootRef)
-  const { viewport, setViewport, viewportRef, viewportSize, dimensions, worldAt } = viewportState
+  const { viewport, setViewport, setAxis, viewportRef, viewportSize, dimensions, worldAt } = viewportState
   const [readOnly, setReadOnly] = React.useState(false)
-  const [modal, setModal] = React.useState<Modal | null>(null)
+  const [modal, publishModal] = React.useState<Modal | null>(null)
+  const modalRef = React.useRef<Modal | null>(null)
+  const setModal = React.useCallback((value: Modal | null): void => { modalRef.current = value; publishModal(value) }, [])
+  const interactionActive = React.useRef<() => boolean>(() => false)
+  const propertyControls = React.useMemo(() => new Set<symbol>(), [context])
   const pointerRef = React.useRef<Point | null>(null)
 
   const modelRef = React.useRef(model)
   const selectionState = useCanvasSelection(modelRef)
-  const { selection, setSelection, selectionRef, selectedEdge, setSelectedEdge, selectedEdgeRef, editingId, setEditingId, editingRef, editingEdgeLabel, setEditingEdgeLabel, replaceSelection } = selectionState
+  const { selection, setSelection, selectionRef, selectedEdge, setSelectedEdge, selectedEdgeRef, editingId, setEditingId, editingRef, editingEdgeLabel, setEditingEdgeLabel, editingEdgeRef, replaceSelection, selectSingleNode, selectSingleEdge, clearSelection } = selectionState
   const readOnlyRef = React.useRef(false)
   modelRef.current = model
   const locked = readOnly || snapshot.invalid
-  readOnlyRef.current = locked || snapshot.busy || !snapshot.ready || !isViewActive()
+  readOnlyRef.current = locked || document.isFrozen() || snapshot.busy || !snapshot.ready || !isViewActive()
 
   const nodesById = React.useMemo(() => new Map(model.nodes.map((n) => [n.id, n])), [model.nodes])
   const zm = zoomMultiplier(viewport.zoom)
@@ -125,20 +136,17 @@ const CanvasEditor = ({ relPath, owner }: { relPath: string; owner: CanvasOwner 
 
   const setModelBoth = React.useCallback((next: CanvasData): void => {
     if (!isViewActive()) return
-    document.setData(next)
+    document.setData(next, mountedView)
     modelRef.current = document.get().data
-  }, [document, isViewActive])
-  const flushSave = (next: CanvasData): Promise<void> => isViewActive() ? document.flush(next) : Promise.resolve()
-  const scheduleSave = (next: CanvasData): void => { if (isViewActive()) document.schedule(next) }
+  }, [document, isViewActive, mountedView?.mountId, mountedView?.generation])
+  const flushSave = (next: CanvasData): Promise<void> => isViewActive() ? document.flush(next, true, mountedView) : Promise.resolve()
+  const scheduleSave = (next: CanvasData): void => { if (isViewActive()) document.schedule(next, mountedView) }
   const pushUndo = (label: string, prev: CanvasData, next: CanvasData): void => {
     if (!isViewActive() || document.get().busy) return
     const previous = structuredClone(prev)
     const following = structuredClone(next)
-    api.undo.push({
-      label,
-      undo: async () => { await restoreCanvasTarget(owner, relPath, previous, serializeCanvas(following)); return { ok: true } },
-      redo: async () => { await restoreCanvasTarget(owner, relPath, following, serializeCanvas(previous)); return { ok: true } }
-    })
+    if (serializeCanvas(previous) === serializeCanvas(following)) return
+    api.undo.push({ label, ...document.recordHistory(previous, following) })
   }
   const apply = (next: CanvasData, label: string): void => {
     if (readOnlyRef.current || !isViewActive() || document.get().busy) return
@@ -167,11 +175,17 @@ const CanvasEditor = ({ relPath, owner }: { relPath: string; owner: CanvasOwner 
 
   const bridgeRef = React.useMemo<{ current: CanvasSession | null }>(() => ({ current: null }), [document])
   bridgeRef.current = {
-    get: () => ({ data: document.get().data, viewport: viewportRef.current, nodeIds: [...selectionRef.current], edgeId: selectedEdgeRef.current, readOnly: readOnlyRef.current, ready: document.get().ready && isViewActive(), invalid: document.get().invalid, revision: serializeCanvas(document.get().data), error: document.get().error }),
-    commit: async (next, revision) => {
+    get: () => {
+      const current = document.get()
+      const state = { data: current.data, viewport: viewportRef.current, nodeIds: [...selectionRef.current], edgeId: selectedEdgeRef.current, readOnly: readOnly || document.isFrozen() || current.invalid || current.busy || !current.ready || !isViewActive(), locked: readOnly, ready: current.ready && isViewActive(), invalid: current.invalid, revision: serializeCanvas(current.data), error: current.error, controlsBlocked: document.isFrozen() || current.busy || current.invalid || modelRef.current !== current.data || Boolean(editingRef.current || editingEdgeRef.current || modalRef.current || interactionActive.current() || propertyControls.size) }
+      const signature = JSON.stringify(state)
+      if (signature !== context.signature) { context.signature = signature; context.revision++ }
+      return { ...state, viewRevision: `canvas-view:${mountedView?.mountId ?? 'legacy'}:${mountedView?.generation ?? 0}:${context.revision}` }
+    },
+    commit: async (next, revision, beforeWrite, beforeDispatch) => {
       owner.assertActive()
-      if (!isViewActive() || readOnlyRef.current) throw new Error(uiText('canvas.error.readOnly'))
-      await document.commit(next, revision)
+      if (bridgeRef.current!.get().readOnly) throw new Error(uiText('canvas.error.readOnly'))
+      await document.commit(next, revision, beforeWrite, beforeDispatch, mountedView)
     },
     restore: (view) => {
       owner.assertActive()
@@ -179,12 +193,63 @@ const CanvasEditor = ({ relPath, owner }: { relPath: string; owner: CanvasOwner 
       if (view.viewport) setViewport(view.viewport)
       if (view.nodeIds) setSelection(new Set(view.nodeIds))
       if (view.edgeId !== undefined) setSelectedEdge(view.edgeId)
+    },
+    holdControls: () => {
+      owner.assertActive()
+      if (!isViewActive()) throw new Error('The Canvas view is no longer mounted.')
+      if (document.isFrozen()) throw new Error('The Canvas draft is prepared for another operation.')
+      const token = Symbol()
+      propertyControls.add(token); notifyCanvas(owner)
+      return () => { if (propertyControls.delete(token)) notifyCanvas(owner) }
+    },
+    persistence: document.persistence,
+    lifecycle: (action, draftRevision, diskRevision, beforeEffect, beforeDispatch) => document.lifecycle(action, draftRevision, diskRevision, beforeEffect, beforeDispatch, mountedView),
+    history: document.history,
+    recordHistory: (before, after) => { if (serializeCanvas(before) === serializeCanvas(after)) return; api.undo.push({ label: uiText('canvas.command.edit'), ...document.recordHistory(before, after) }) },
+    historyApply: (direction, revision, beforeWrite, beforeDispatch) => document.applyHistory(direction, revision, beforeWrite, beforeDispatch, mountedView),
+    frozen: document.isFrozen,
+    draftChanged: (key, dirty) => {
+      if (!isViewActive()) throw new Error('The Canvas view is no longer mounted.')
+      if (document.isFrozen()) throw new Error('The Canvas draft is prepared for another operation.')
+      if (key) { if (dirty) context.rawDrafts.add(key); else context.rawDrafts.delete(key) }
+      context.draftRevision++; notifyCanvas(owner)
+    },
+    control: async (id, value, expectedRevision, beforeEffect) => {
+      const assertCurrent = (): void => {
+        owner.assertActive()
+        const current = bridgeRef.current!.get()
+        if (!isViewActive() || !current.ready || current.viewRevision !== expectedRevision) throw Object.assign(new Error('The exact Canvas view changed. Inspect it again before changing controls.'), { code: 'REVISION_CONFLICT', outcome: 'not-applied' })
+        if (current.controlsBlocked) throw Object.assign(new Error(uiText('canvas.error.viewBusy')), { code: 'VIEWER_BUSY', outcome: 'not-applied' })
+        validateViewControl(id, value)
+      }
+      try { assertCurrent(); await beforeEffect(); assertCurrent() } catch (error) {
+        if ((error as { outcome?: string; outcomeUnknown?: boolean } | null)?.outcome === 'unknown' || (error as { outcomeUnknown?: boolean } | null)?.outcomeUnknown === true) throw error
+        throw Object.assign(error instanceof Error ? error : new Error(String(error)), { outcome: 'not-applied' })
+      }
+      try { applyViewControl(id, value) } catch (error) { throw Object.assign(error instanceof Error ? error : new Error(String(error)), { outcome: 'unknown', outcomeUnknown: true, retryable: false }) }
     }
   }
-  React.useEffect(() => registerCanvasSession(relPath, { get: () => bridgeRef.current!.get(), commit: (data, revision) => bridgeRef.current!.commit(data, revision), restore: (view) => bridgeRef.current!.restore(view) }, owner), [relPath, bridgeRef, owner])
-  React.useEffect(() => notifyCanvas(owner), [owner, model, viewport, selection, selectedEdge, readOnly, saveError])
+  React.useEffect(() => registerCanvasSession(relPath, { get: () => bridgeRef.current!.get(), commit: (data, revision, beforeWrite, beforeDispatch) => bridgeRef.current!.commit(data, revision, beforeWrite, beforeDispatch), restore: (view) => bridgeRef.current!.restore(view), control: (id, value, revision, beforeEffect) => bridgeRef.current!.control!(id, value, revision, beforeEffect), persistence: document.persistence, lifecycle: (action, draftRevision, diskRevision, beforeEffect, beforeDispatch) => bridgeRef.current!.lifecycle!(action, draftRevision, diskRevision, beforeEffect, beforeDispatch), history: document.history, historyApply: (direction, revision, beforeWrite, beforeDispatch) => bridgeRef.current!.historyApply!(direction, revision, beforeWrite, beforeDispatch), recordHistory: (before, after) => bridgeRef.current!.recordHistory!(before, after), holdControls: () => bridgeRef.current!.holdControls!(), frozen: document.isFrozen, draftChanged: (key, dirty) => bridgeRef.current!.draftChanged!(key, dirty) }, owner, mountedView), [relPath, bridgeRef, owner, mountedView?.mountId, mountedView?.generation])
+  React.useEffect(() => {
+    if (!mountedView) return
+    return document.attachEditor(mountedView, () => {
+      const signature = JSON.stringify([editingRef.current, editingEdgeRef.current, Boolean(modalRef.current), interactionActive.current(), propertyControls.size, context.rawDrafts.size])
+      if (signature !== context.draftSignature) { context.draftSignature = signature; context.draftRevision++ }
+      return { revision: context.draftRevision, dirty: Boolean(editingRef.current || editingEdgeRef.current || modalRef.current || interactionActive.current() || propertyControls.size || context.rawDrafts.size), active: isViewActive() }
+    }, frozen => {
+      if (rootRef.current) rootRef.current.inert = frozen
+      readOnlyRef.current = frozen || bridgeRef.current!.get().locked === true || document.get().busy || !document.get().ready || !isViewActive()
+    })
+  }, [document, context, mountedView?.mountId, mountedView?.generation, isViewActive])
 
   const reloadDisk = async (): Promise<void> => {
+    if (mountedView) {
+      const choice = await api.ui.confirm({ title: uiText('canvas.action.reload'), message: uiText('canvas.error.discard'), actions: [{ label: uiText('canvas.action.cancel'), value: 'cancel', variant: 'ghost' }, { label: uiText('canvas.action.reload'), value: 'reload', variant: 'danger' }] })
+      if (choice !== 'reload') return
+      const observed = await api.commands.executeOwn('disk-inspect', { mountedView })
+      if (observed.ok) await runNativeAction('reload-disk', { expectedDraftRevision: (observed.value as { draftRevision: string }).draftRevision, expectedDiskRevision: (observed.value as { diskRevision: string }).diskRevision, discardDraft: true }).catch(() => {})
+      return
+    }
     const restored = await document.reload(() => api.ui.confirm({ title: uiText('canvas.action.reload'), message: uiText('canvas.error.discard'), actions: [{ label: uiText('canvas.action.cancel'), value: 'cancel', variant: 'ghost' }, { label: uiText('canvas.action.reload'), value: 'reload', variant: 'danger' }] }), isViewActive)
     if (restored && isViewActive()) { setSelection(new Set()); setSelectedEdge(null) }
   }
@@ -254,10 +319,24 @@ const CanvasEditor = ({ relPath, owner }: { relPath: string; owner: CanvasOwner 
 
   const gestures = useCanvasGestures({ rootRef, modelRef, readOnlyRef, viewport: viewportState, selection: selectionState, setModelBoth, apply, pushUndo, scheduleSave, addOfKind, onCreateRect })
   const { marquee, preview, ghost, snapGuides, draggingIds, panning, onRootPointerDown, onRootPointerMove, onRootPointerUp, onNodePointerDown, onResizeStart, onConnectStart, onCreateStart, onEdgePointerDown, onSelectionPointerDown, cancelInteraction } = gestures
+  interactionActive.current = gestures.isInteracting
+  React.useEffect(() => notifyCanvas(owner), [owner, model, viewport, selection, selectedEdge, readOnly, saveError, editingId, editingEdgeLabel, modal, gestures.interacting])
 
   // ── History and clipboard ────────────────────────────────────────────────────
-  const doUndo = (): void => { if (isViewActive()) void api.commands.execute('undo') }
-  const doRedo = (): void => { if (isViewActive()) void api.commands.execute('redo') }
+  const runNativeAction = async (id: string, extra: Record<string, unknown> = {}): Promise<void> => {
+    if (!mountedView || !isViewActive()) return
+    const state = bridgeRef.current!.get()
+    const result = await api.commands.executeOwn(id, { mountedView, nodeIds: state.nodeIds, edgeId: state.edgeId, expectedRevision: state.revision, expectedViewRevision: state.viewRevision, ...extra })
+    if (!result.ok) throw new Error(result.error.message)
+  }
+  const runHistory = (direction: 'undo' | 'redo'): void => {
+    if (!isViewActive() || readOnlyRef.current) return
+    if (!mountedView) { void document.applyHistory(direction, document.history().revision).catch(() => {}); return }
+    const state = bridgeRef.current!.get()
+    void api.commands.executeOwn(`history-${direction}`, { mountedView, expectedViewRevision: state.viewRevision, expectedRevision: state.revision, expectedHistoryRevision: document.history().revision, nodeIds: state.nodeIds, edgeId: state.edgeId })
+  }
+  const doUndo = (): void => runHistory('undo')
+  const doRedo = (): void => runHistory('redo')
 
   const selectionFragment = (): CanvasData | null => {
     const ids = selectionRef.current
@@ -267,6 +346,7 @@ const CanvasEditor = ({ relPath, owner }: { relPath: string; owner: CanvasOwner 
     return { nodes, edges }
   }
   const copySelection = async (cut: boolean): Promise<void> => {
+    if (mountedView) { await runNativeAction(cut ? 'clipboard-cut' : 'clipboard-copy').catch(() => {}); return }
     const fragment = selectionFragment()
     if (!fragment) return
     try {
@@ -278,6 +358,7 @@ const CanvasEditor = ({ relPath, owner }: { relPath: string; owner: CanvasOwner 
   }
   /** Paste cards copied from a board, a URL as a web page, or text as a card, at `at`. */
   const pasteAt = async (at: Point): Promise<void> => {
+    if (mountedView) { await runNativeAction('clipboard-paste', { at }).catch(() => {}); return }
     if (readOnlyRef.current) return
     let text = ''
     try { text = (await navigator.clipboard.readText()).trim() } catch { return }
@@ -335,107 +416,59 @@ const CanvasEditor = ({ relPath, owner }: { relPath: string; owner: CanvasOwner 
     const rect = viewportSize()
     if (bounds && rect) setViewport(fitView(bounds, rect.width, rect.height))
   }
+  const validateViewControl = (id: string, value?: string | number | boolean): void => {
+    if (id === 'select-node' || id === 'select-edge') {
+      if (typeof value !== 'string' || !value.length || value.length > 256) throw Object.assign(new Error('Expected a bounded Canvas target ID.'), { code: 'INVALID_ARGUMENT' })
+      const found = id === 'select-node' ? nodeById(modelRef.current, value) : edgeById(modelRef.current, value)
+      if (!found) throw Object.assign(new Error('The Canvas selection target no longer exists.'), { code: 'CANVAS_TARGET_NOT_FOUND' })
+      return
+    }
+    if ((id === 'viewport-x' || id === 'viewport-y') && typeof value === 'number' && Number.isFinite(value)) return
+    if (id === 'zoom' && typeof value === 'number' && Number.isFinite(value) && value >= MIN_ZOOM && value <= MAX_ZOOM) return
+    if (id === 'locked' && typeof value === 'boolean') return
+    if (['fit', 'fit-selection', 'clear-selection'].includes(id) && value === undefined) {
+      if (id === 'fit-selection') {
+        const edge = selectedEdgeRef.current ? edgeById(modelRef.current, selectedEdgeRef.current) : undefined
+        const ids = edge ? [edge.fromNode, edge.toNode] : [...selectionRef.current]
+        if (!ids.length || Boolean(selectedEdgeRef.current && !edge) || ids.some(target => !nodeById(modelRef.current, target))) throw Object.assign(new Error('The selected Canvas cards or connection are unavailable.'), { code: 'CANVAS_TARGET_NOT_FOUND' })
+      }
+      return
+    }
+    throw Object.assign(new Error('Unsupported Canvas view control or value.'), { code: 'INVALID_ARGUMENT' })
+  }
+  const applyViewControl = (id: string, value?: string | number | boolean): void => {
+    owner.assertActive()
+    if (!isViewActive()) throw new Error('The Canvas view is no longer mounted.')
+    if (id === 'locked' && typeof value === 'boolean') { setReadOnly(value); clearSelection(); return }
+    if (id === 'select-node' && typeof value === 'string') { selectSingleNode(value); return }
+    if (id === 'select-edge' && typeof value === 'string') { selectSingleEdge(value); return }
+    if (id === 'clear-selection') { clearSelection(); return }
+    if ((id === 'viewport-x' || id === 'viewport-y') && typeof value === 'number') { setAxis(id === 'viewport-x' ? 'x' : 'y', value); return }
+    if (id === 'fit-selection') { zoomToSelection(); return }
+    if (id === 'fit') { fitTo(modelRef.current.nodes); return }
+    const rect = viewportSize()
+    const x = (rect?.width ?? 0) / 2, y = (rect?.height ?? 0) / 2
+    if (id === 'zoom' && typeof value === 'number' && Number.isFinite(value) && value >= MIN_ZOOM && value <= MAX_ZOOM) { setViewport(v => zoomAt(v, x, y, value / v.zoom)); return }
+    if (id === 'zoom-in' || id === 'zoom-out') { setViewport(v => zoomBy(v, x, y, id === 'zoom-in' ? ZOOM_BUTTON_STEP : -ZOOM_BUTTON_STEP)); return }
+    throw new Error('Unsupported Canvas view control.')
+  }
   const zoomToSelection = (): void => {
     const edge = selectedEdgeRef.current ? edgeById(modelRef.current, selectedEdgeRef.current) : undefined
     fitTo(edge ? modelRef.current.nodes.filter((node) => node.id === edge.fromNode || node.id === edge.toNode) : modelRef.current.nodes.filter((node) => selectionRef.current.has(node.id)))
   }
-  const createGroupFromSelection = (): void => {
-    const members = modelRef.current.nodes.filter((node) => selectionRef.current.has(node.id))
-    const bounds = boundsOf(members)
-    if (!bounds || readOnlyRef.current) return
-    const group = createGroupNode(bounds.x - GROUP_PADDING, bounds.y - GROUP_PADDING, bounds.width + GROUP_PADDING * 2, bounds.height + GROUP_PADDING * 2)
-    // Below its members: the array index is the z-order.
-    const data = modelRef.current
-    const at = Math.min(...members.map((node) => data.nodes.indexOf(node)))
-    apply({ ...data, nodes: [...data.nodes.slice(0, at), group, ...data.nodes.slice(at)] }, uiText('auto.5a0b1c170fd5'))
-    replaceSelection(new Set([group.id]))
+  const nativeSelectionAction = (action: string): void => {
+    if (readOnlyRef.current) return
+    try {
+      const result = applyCanvasSelectionAction(modelRef.current, action, [...selectionRef.current], selectedEdgeRef.current, viewportRef.current.zoom)
+      apply(result.data, uiText(action === 'group-selection' ? 'auto.5a0b1c170fd5' : 'canvas.menu.align'))
+      replaceSelection(new Set(result.nodeIds)); setSelectedEdge(result.edgeId)
+    } catch { return }
   }
-
-  /** The cards an alignment moves, and the box it aligns them in. */
-  const alignTargets = (): { nodes: CanvasNode[]; box: Rect } | null => {
-    const selected = modelRef.current.nodes.filter((node) => selectionRef.current.has(node.id))
-    if (selected.length === 1 && selected[0].type === 'group') {
-      const group = selected[0]
-      const inner = { x: group.x + GROUP_PADDING, y: group.y + GROUP_PADDING, width: group.width - GROUP_PADDING * 2, height: group.height - GROUP_PADDING * 2 }
-      const nodes = modelRef.current.nodes.filter((node) => node.id !== group.id && node.x >= group.x && node.y >= group.y && node.x + node.width <= group.x + group.width && node.y + node.height <= group.y + group.height)
-      return nodes.length ? { nodes, box: inner } : null
-    }
-    const nodes = selected.filter((node) => node.type !== 'group')
-    const box = boundsOf(nodes)
-    return nodes.length > 1 && box ? { nodes, box } : null
-  }
-  const moveAll = (moves: Map<string, Partial<Rect>>, label: string): void => {
-    if (!moves.size) return
-    const data = modelRef.current
-    apply({ ...data, nodes: data.nodes.map((node) => moves.has(node.id) ? { ...node, ...moves.get(node.id) } as CanvasNode : node) }, label)
-  }
-  const align = (edge: 'left' | 'center' | 'right' | 'top' | 'middle' | 'bottom'): void => {
-    const target = alignTargets()
-    if (!target) return
-    const { box } = target
-    const moves = new Map<string, Partial<Rect>>()
-    for (const node of target.nodes) {
-      if (edge === 'left') moves.set(node.id, { x: box.x })
-      else if (edge === 'right') moves.set(node.id, { x: box.x + box.width - node.width })
-      else if (edge === 'center') moves.set(node.id, { x: box.x + (box.width - node.width) / 2 })
-      else if (edge === 'top') moves.set(node.id, { y: box.y })
-      else if (edge === 'bottom') moves.set(node.id, { y: box.y + box.height - node.height })
-      else moves.set(node.id, { y: box.y + (box.height - node.height) / 2 })
-    }
-    moveAll(moves, uiText('canvas.menu.align'))
-  }
-  const arrange = (layout: 'horizontal' | 'vertical' | 'grid'): void => {
-    const target = alignTargets()
-    if (!target || target.nodes.length < 2) return
-    const gap = gridSpacing(viewportRef.current.zoom)
-    const rows: CanvasNode[][] = []
-    let bottom = -Infinity
-    for (const node of [...target.nodes].sort((a, b) => a.y - b.y)) {
-      if (node.y < bottom && rows.length) { rows[rows.length - 1].push(node); bottom = Math.min(bottom, node.y + node.height) } else { rows.push([node]); bottom = node.y + node.height }
-    }
-    rows.forEach((row) => row.sort((a, b) => a.x - b.x))
-    const moves = new Map<string, Partial<Rect>>()
-    const ordered = rows.flat()
-    if (layout === 'grid') {
-      let y = target.box.y
-      for (const row of rows) {
-        let x = target.box.x
-        let height = 0
-        for (const node of row) { moves.set(node.id, { x, y }); x += node.width + gap; height = Math.max(height, node.height) }
-        y += height + gap
-      }
-    } else {
-      let previous = ordered[0]
-      for (const node of ordered.slice(1)) {
-        const at = layout === 'horizontal' ? { x: (moves.get(previous.id)?.x ?? previous.x) + previous.width + gap, y: moves.get(ordered[0].id)?.y ?? ordered[0].y } : { x: moves.get(ordered[0].id)?.x ?? ordered[0].x, y: (moves.get(previous.id)?.y ?? previous.y) + previous.height + gap }
-        moves.set(node.id, at)
-        previous = node
-      }
-    }
-    moveAll(moves, uiText('canvas.menu.align'))
-  }
-  const distribute = (axis: 'horizontal' | 'vertical'): void => {
-    const target = alignTargets()
-    if (!target || target.nodes.length < 3) return
-    const horizontal = axis === 'horizontal'
-    const nodes = [...target.nodes].sort((a, b) => horizontal ? a.x - b.x || a.y - b.y : a.y - b.y || a.x - b.x)
-    const total = nodes.reduce((sum, node) => sum + (horizontal ? node.width : node.height), 0)
-    const space = ((horizontal ? target.box.width : target.box.height) - total) / (nodes.length - 1)
-    const moves = new Map<string, Partial<Rect>>()
-    let cursor = horizontal ? nodes[0].x + nodes[0].width + space : nodes[0].y + nodes[0].height + space
-    for (const node of nodes.slice(1, -1)) {
-      moves.set(node.id, horizontal ? { x: cursor } : { y: cursor })
-      cursor += (horizontal ? node.width : node.height) + space
-    }
-    moveAll(moves, uiText('canvas.menu.align'))
-  }
-  const justify = (axis: 'horizontal' | 'vertical'): void => {
-    const target = alignTargets()
-    if (!target || target.nodes.length < 2) return
-    const moves = new Map<string, Partial<Rect>>()
-    for (const node of target.nodes) moves.set(node.id, axis === 'horizontal' ? { x: target.box.x, width: target.box.width } : { y: target.box.y, height: target.box.height })
-    moveAll(moves, uiText('canvas.menu.align'))
-  }
+  const createGroupFromSelection = (): void => nativeSelectionAction('group-selection')
+  const align = (edge: 'left' | 'center' | 'right' | 'top' | 'middle' | 'bottom'): void => nativeSelectionAction(`align-${edge}`)
+  const arrange = (layout: 'horizontal' | 'vertical' | 'grid'): void => nativeSelectionAction(`arrange-${layout}`)
+  const distribute = (axis: 'horizontal' | 'vertical'): void => nativeSelectionAction(`distribute-${axis}`)
+  const justify = (axis: 'horizontal' | 'vertical'): void => nativeSelectionAction(`justify-${axis}`)
   const openAlignMenu = (anchor: HTMLElement): void => {
     const r = anchor.getBoundingClientRect()
     void api.ui.openMenu([
@@ -509,6 +542,18 @@ const CanvasEditor = ({ relPath, owner }: { relPath: string; owner: CanvasOwner 
 
   /** Turn a text card into a note next to the board, keeping its place, size and colour. */
   const convertToFile = async (node: TextNode): Promise<void> => {
+    if (mountedView) {
+      const folder = relPath.includes('/') ? relPath.slice(0, relPath.lastIndexOf('/')) : ''
+      for (let n = 0; n < 1000; n++) {
+        const name = `${n === 0 ? 'Untitled' : `Untitled ${n}`}.md`, destination = folder ? `${folder}/${name}` : name
+        if ((await api.vault.readFileBaseline(destination))?.baseline) continue
+        const observed = await api.commands.executeOwn('convert-text-to-note-observe', { destination })
+        if (!observed.ok) return
+        await runNativeAction('convert-text-to-note', { destination, expectedDestinationRevision: (observed.value as { revision: string }).revision }).catch(() => {})
+        return
+      }
+      return
+    }
     if (readOnlyRef.current) return
     const folder = relPath.includes('/') ? relPath.slice(0, relPath.lastIndexOf('/')) : ''
     for (let n = 0; n < 1000; n++) {
@@ -552,6 +597,7 @@ const CanvasEditor = ({ relPath, owner }: { relPath: string; owner: CanvasOwner 
       if (classifyFilePath(node.file) === 'base') {
         const views = await baseViews(node.file)
         const setView = (name: string | null): void => {
+          if (mountedView) { void api.commands.executeOwn('base-view-inspect', { mountedView }).then(result => { if (result.ok) return runNativeAction(name ? 'base-view-select' : 'base-view-default', { expectedBaseRevision: (result.value as { revision: string }).revision, ...(name ? { name } : {}) }) }).catch(() => {}); return }
           const data = modelRef.current
           apply({ ...data, nodes: data.nodes.map((entry) => { if (entry.id !== node.id) return entry; const next = { ...entry } as FileNode; if (name) next.subpath = `#${name}`; else delete next.subpath; return next }) }, uiText('canvas.menu.chooseView'))
         }
@@ -592,8 +638,7 @@ const CanvasEditor = ({ relPath, owner }: { relPath: string; owner: CanvasOwner 
       else zoomToSelection()
     } else if (e.key === 'Escape') {
       cancelInteraction()
-      replaceSelection(new Set())
-      setSelectedEdge(null)
+      clearSelection()
     } else if (mod && e.key.toLowerCase() === 'a') {
       e.preventDefault()
       replaceSelection(new Set(modelRef.current.nodes.map((n) => n.id)))
@@ -635,7 +680,7 @@ const CanvasEditor = ({ relPath, owner }: { relPath: string; owner: CanvasOwner 
     const world = worldAt(e)
     const at = { x: e.clientX, y: e.clientY }
     if (nodeId) {
-      if (!selectionRef.current.has(nodeId)) { replaceSelection(new Set([nodeId])); setSelectedEdge(null) }
+      if (!selectionRef.current.has(nodeId)) selectSingleNode(nodeId)
       const node = nodeById(modelRef.current, nodeId)
       if (node) void nodeMenuItems(node).then((items) => { if (isViewActive()) void api.ui.openMenu(items, at) })
       return
@@ -647,7 +692,7 @@ const CanvasEditor = ({ relPath, owner }: { relPath: string; owner: CanvasOwner 
       { id: 'redo', label: uiText('canvas.control.redo'), icon: <RedoIcon />, onSelect: doRedo },
       { id: 'paste', label: uiText('auto.db2483000d15'), icon: <ClipboardIcon />, enabled: !locked, onSelect: () => pasteAt(world) },
       { type: 'separator' },
-      { id: 'read-only', label: uiText('auto.9b19a5a212de'), type: 'checkbox', checked: readOnly, onSelect: () => { setReadOnly(!readOnly); replaceSelection(new Set()); setSelectedEdge(null) } }
+      { id: 'read-only', label: uiText('auto.9b19a5a212de'), type: 'checkbox', checked: readOnly, onSelect: () => applyViewControl('locked', !readOnly) }
     ], at)
   }
 
@@ -701,6 +746,8 @@ const CanvasEditor = ({ relPath, owner }: { relPath: string; owner: CanvasOwner 
       className={rootClass}
       style={gridStyle}
       tabIndex={0}
+      onInputCapture={guardDraftInput}
+      onChangeCapture={guardDraftInput}
       onPointerDown={onRootPointerDown}
       onPointerMove={(e) => { const r = rootRef.current?.getBoundingClientRect(); if (r) pointerRef.current = { x: e.clientX - r.left, y: e.clientY - r.top }; onRootPointerMove(e) }}
       onPointerUp={onRootPointerUp}
@@ -790,7 +837,7 @@ const CanvasEditor = ({ relPath, owner }: { relPath: string; owner: CanvasOwner 
       {saveError && !snapshot.invalid && (
         <div className="canvas-banner" role="alert" {...OCCLUDER} onPointerDown={(e) => e.stopPropagation()}>
           <span>{saveError}</span>
-          <button type="button" onClick={() => { void flushSave(modelRef.current).catch(() => {}) }}>{uiText('canvas.action.retry')}</button>
+          <button type="button" onClick={() => { if (mountedView) { void api.commands.executeOwn('disk-inspect', { mountedView }).then(result => { if (result.ok) return runNativeAction('retry-save', { expectedDraftRevision: (result.value as { draftRevision: string }).draftRevision, expectedDiskRevision: (result.value as { diskRevision: string }).diskRevision }) }).catch(() => {}) } else void flushSave(modelRef.current).catch(() => {}) }}>{uiText('canvas.action.retry')}</button>
           <button type="button" onClick={() => void reloadDisk()}>{uiText('canvas.action.reload')}</button>
         </div>
       )}
@@ -822,11 +869,11 @@ const CanvasEditor = ({ relPath, owner }: { relPath: string; owner: CanvasOwner 
       <Controls
         owner={owner}
         readOnly={readOnly}
-        onUnlock={() => setReadOnly(false)}
-        onZoomIn={() => { const r = viewportSize(); setViewport((v) => zoomBy(v, (r?.width ?? 0) / 2, (r?.height ?? 0) / 2, ZOOM_BUTTON_STEP)) }}
-        onZoomOut={() => { const r = viewportSize(); setViewport((v) => zoomBy(v, (r?.width ?? 0) / 2, (r?.height ?? 0) / 2, -ZOOM_BUTTON_STEP)) }}
-        onReset={() => { const r = viewportSize(); setViewport((v) => zoomAt(v, (r?.width ?? 0) / 2, (r?.height ?? 0) / 2, 1 / v.zoom)) }}
-        onFit={() => fitTo(modelRef.current.nodes)}
+        onUnlock={() => applyViewControl('locked', false)}
+        onZoomIn={() => applyViewControl('zoom-in')}
+        onZoomOut={() => applyViewControl('zoom-out')}
+        onReset={() => applyViewControl('zoom', 1)}
+        onFit={() => applyViewControl('fit')}
         onUndo={doUndo}
         onRedo={doRedo}
       />

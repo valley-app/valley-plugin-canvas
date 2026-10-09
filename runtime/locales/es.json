@@ -89,6 +89,7 @@
   "plugin.canvas.field.snapObjects": "Ajustar a los objetos",
   "plugin.canvas.newTab.create": "Nuevo lienzo",
   "canvas.error.preview": "La vista previa del archivo no está disponible.",
+  "canvas.error.viewUnavailable": "La vista de Canvas solicitada no está disponible.",
   "canvas.align.left": "Alinear a la izquierda",
   "canvas.align.center": "Alinear al centro",
   "canvas.align.right": "Alinear a la derecha",
@@ -160,5 +161,11 @@
   "canvas.suggest.media": "Buscar una imagen, vídeo, audio o PDF…",
   "canvas.suggest.empty": "No hay archivos coincidentes",
   "bookmark.view": "Vista del lienzo",
-  "bookmark.item": "Elemento seleccionado"
+  "bookmark.item": "Elemento seleccionado",
+  "canvas.control.selectedCard": "Tarjeta seleccionada",
+  "canvas.control.selectedConnection": "Conexión seleccionada",
+  "canvas.control.clearSelection": "Borrar selección",
+  "canvas.control.viewportX": "Posición horizontal",
+  "canvas.control.viewportY": "Posición vertical",
+  "canvas.error.viewBusy": "Finaliza la edición, el gesto o el diálogo actual del lienzo antes de cambiar los controles de vista."
 }
