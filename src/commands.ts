@@ -37,21 +37,24 @@ async function observeCreation(api: ValleyPluginApi, path: string, owner: Canvas
   return { path, expectedRevision }
 }
 
-export async function createCanvasFromUi(api: ValleyPluginApi, folder = activeFolder(api), owner = captureCanvasOwner(api)): Promise<void> {
+async function freeCanvasPath(api: ValleyPluginApi, folder: string, owner: CanvasOwner): Promise<string> {
   for (let n = 0; n < 1000; n++) {
     owner.assertActive()
     const path = `${folder ? `${folder}/` : ''}Untitled${n ? ` ${n}` : ''}.canvas`
     const file = await owner.run(() => api.vault.stat(path))
     owner.assertActive()
-    if (file) continue
-    const observed = await api.commands.executeOwn('create-observe', { path })
-    owner.assertActive()
-    if (!observed.ok) throw new Error(observed.error.message)
-    const created = await api.commands.executeOwn('create', { ...record(observed.value), open: true })
-    if (!created.ok) throw new Error(created.error.message)
-    return
+    if (!file) return path
   }
   throw new Error('Could not find a free canvas name.')
+}
+
+export async function createCanvasFromUi(api: ValleyPluginApi, folder = activeFolder(api), owner = captureCanvasOwner(api)): Promise<void> {
+  const path = await freeCanvasPath(api, folder, owner)
+  const observed = await api.commands.executeOwn('create-observe', { path })
+  owner.assertActive()
+  if (!observed.ok) throw new Error(observed.error.message)
+  const created = await api.commands.executeOwn('create', { ...record(observed.value), open: true })
+  if (!created.ok) throw new Error(created.error.message)
 }
 
 export function registerCanvasCommands(api: ValleyPluginApi, owner = captureCanvasOwner(api)): () => void {
@@ -65,7 +68,25 @@ export function registerCanvasCommands(api: ValleyPluginApi, owner = captureCanv
     trashFileGuarded: (...args: Parameters<typeof api.vault.trashFileGuarded>) => owner.run(() => { assertActive(); return api.vault.trashFileGuarded(...args) }),
     writeFileGuarded: (...args: Parameters<typeof api.vault.writeFileGuarded>) => owner.run(() => { assertActive(); return api.vault.writeFileGuarded(...args) })
   }
-  const offNew = api.commands.register({ id: 'create-new', label: 'Canvas: Create new canvas', labelKey: 'auto.7b18787efddd', sideEffect: 'write', agentVisibility: 'forbidden', recovery: 'non-replayable', idempotent: false, outputSchema: { type: 'null' }, revision: () => ({ folder: activeFolder(api) }), preview: () => ({ action: 'create-canvas', folder: activeFolder(api), open: true }), run: async (_input, context) => { await guard(context); await createCanvasFromUi(api, undefined, owner); return { value: null, revert: null } } })
+  // create-new runs this in its own command context: a nested executeOwn('create') would queue a second write behind the running one until the renderer timeout.
+  const createCanvas = async ({ path, expectedRevision, open }: { path: string; expectedRevision: string; open: boolean }, context: CommandContext) => {
+    assertActive()
+    if (missingRevisions(owner).get(path) !== expectedRevision) throw new Error('Inspect the unused canvas path before creating it.')
+    const observed = await observeCreation(api, path, owner, assertActive)
+    if (observed.expectedRevision !== expectedRevision) throw new Error('The canvas path changed.')
+    await guard(context)
+    const written = await owner.run(() => { assertActive(); return api.vault.writeFileGuarded(path, EMPTY_CANVAS, null) })
+    if (!written.ok) throw Object.assign(new Error('The canvas could not be created.'), { outcome: written.reason === 'conflict' ? 'not-applied' : 'unknown', code: written.reason === 'conflict' ? 'REVISION_CONFLICT' : 'OUTCOME_UNKNOWN' })
+    missingRevisions(owner).delete(path)
+    try {
+      const confirmed = await owner.run(() => api.vault.readFileBaseline(path))
+      assertActive()
+      if (confirmed?.content !== EMPTY_CANVAS || confirmed.baseline?.hash !== written.baseline.hash || confirmed.baseline.size !== written.baseline.size) throw new Error('The created canvas could not be verified.')
+      if (open) { await guard(context); await owner.run(() => { assertActive(); return api.workspace.openFile(path) }) }
+    } catch (error) { throw Object.assign(error instanceof Error ? error : new Error(String(error)), { outcome: 'unknown', code: 'OUTCOME_UNKNOWN' }) }
+    return { value: { relPath: path, revision: `canvas:file:${written.baseline.hash}:${written.baseline.size}:${written.baseline.mtimeMs}`, verified: true }, revert: guardedCreatedFileRevert(guardedVault, path, EMPTY_CANVAS, written.baseline, 'Create canvas') }
+  }
+  const offNew = api.commands.register({ id: 'create-new', label: 'Canvas: Create new canvas', labelKey: 'auto.7b18787efddd', sideEffect: 'write', agentVisibility: 'forbidden', recovery: 'non-replayable', idempotent: false, outputSchema: { type: 'null' }, revision: () => ({ folder: activeFolder(api) }), preview: () => ({ action: 'create-canvas', folder: activeFolder(api), open: true }), run: async (_input, context) => { await guard(context); const path = await freeCanvasPath(api, activeFolder(api), owner); const { expectedRevision } = await observeCreation(api, path, owner, assertActive); return { value: null, revert: (await createCanvas({ path, expectedRevision, open: true }, context)).revert } } })
   const offObserve = api.commands.register({ id: 'create-observe', label: 'Canvas: Observe an unused path', paletteSafe: false, sideEffect: 'read', recovery: 'observational', idempotent: true, input: { schema: objectSchema({ path: stringSchema }, ['path']), parse: raw => ({ path: requiredString(record(raw).path) }) }, outputSchema: objectSchema({ path: stringSchema, expectedRevision: stringSchema }, ['path', 'expectedRevision']), run: ({ path }) => observeCreation(api, path, owner, assertActive) })
   const offCreate = api.commands.register({
     id: 'create', label: 'Canvas: Create new canvas', labelKey: 'auto.7b18787efddd', paletteSafe: false, sideEffect: 'write',
@@ -73,23 +94,7 @@ export function registerCanvasCommands(api: ValleyPluginApi, owner = captureCanv
     input: { schema: objectSchema({ path: stringSchema, expectedRevision: stringSchema, open: { type: 'boolean' } }, ['path', 'expectedRevision']), parse: raw => { const input = record(raw); if (input.open !== undefined && typeof input.open !== 'boolean') throw new Error('Expected an explicit open preference.'); return { path: requiredString(input.path), expectedRevision: requiredString(input.expectedRevision), open: input.open === true } } },
     outputSchema: objectSchema({ relPath: stringSchema, revision: stringSchema, verified: { const: true } }, ['relPath', 'revision', 'verified']),
     revision: ({ path }) => observeCreation(api, path, owner, assertActive), preview: ({ path, open }) => ({ action: 'create-canvas', path, open }),
-    run: async ({ path, expectedRevision, open }, context) => {
-      assertActive()
-      if (missingRevisions(owner).get(path) !== expectedRevision) throw new Error('Inspect the unused canvas path before creating it.')
-      const observed = await observeCreation(api, path, owner, assertActive)
-      if (observed.expectedRevision !== expectedRevision) throw new Error('The canvas path changed.')
-      await guard(context)
-      const written = await owner.run(() => { assertActive(); return api.vault.writeFileGuarded(path, EMPTY_CANVAS, null) })
-      if (!written.ok) throw Object.assign(new Error('The canvas could not be created.'), { outcome: written.reason === 'conflict' ? 'not-applied' : 'unknown', code: written.reason === 'conflict' ? 'REVISION_CONFLICT' : 'OUTCOME_UNKNOWN' })
-      missingRevisions(owner).delete(path)
-      try {
-        const confirmed = await owner.run(() => api.vault.readFileBaseline(path))
-        assertActive()
-        if (confirmed?.content !== EMPTY_CANVAS || confirmed.baseline?.hash !== written.baseline.hash || confirmed.baseline.size !== written.baseline.size) throw new Error('The created canvas could not be verified.')
-        if (open) { await guard(context); await owner.run(() => { assertActive(); return api.workspace.openFile(path) }) }
-      } catch (error) { throw Object.assign(error instanceof Error ? error : new Error(String(error)), { outcome: 'unknown', code: 'OUTCOME_UNKNOWN' }) }
-      return { value: { relPath: path, revision: `canvas:file:${written.baseline.hash}:${written.baseline.size}:${written.baseline.mtimeMs}`, verified: true }, revert: guardedCreatedFileRevert(guardedVault, path, EMPTY_CANVAS, written.baseline, 'Create canvas') }
-    }
+    run: (input, context) => createCanvas(input, context)
   })
   const offGet = api.commands.register({ id: 'get', label: 'Canvas: Inspect canvas', labelKey: 'canvas.command.get', paletteSafe: false, sideEffect: 'read', recovery: 'observational', idempotent: true, input: { schema: objectSchema({ path: stringSchema }, ['path']), parse: raw => ({ path: requiredString(record(raw).path) }) }, outputSchema: mutationOutput, run: async ({ path }) => { const target = await readCanvasTarget(api, path, owner, assertActive); return { path, data: target.data, revision: target.revision } } })
   const offEdit = api.commands.register({ id: 'edit', label: 'Canvas: Edit canvas', labelKey: 'canvas.command.edit', paletteSafe: false, sideEffect: 'write', recovery: 'non-replayable', idempotent: false, limits: { operations: 1 }, revisionRequirements: [{ argument: 'expectedRevision', inspectionCommand: 'canvas:get', description: 'Use the observed document or editor revision for this exact canvas path.' }], input: { schema: objectSchema({ path: stringSchema, operation: canvasOperationSchema, expectedRevision: { type: 'string', minLength: 1 } }, ['path', 'operation', 'expectedRevision']), parse: raw => { const input = record(raw); return { path: requiredString(input.path), operation: record(input.operation), expectedRevision: requiredString(input.expectedRevision) } } }, outputSchema: mutationOutput, revision: async ({ path }) => (await readCanvasTarget(api, path, owner, assertActive)).revision, preview: ({ path, operation }) => ({ path, operation }), run: ({ path, operation, expectedRevision }, context) => editCanvasTarget(api, path, operation, expectedRevision, owner, assertActive, () => guard(context)) })

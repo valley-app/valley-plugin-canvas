@@ -353,7 +353,12 @@ export class CanvasDocument {
       this.dirty = true
       this.publish({ error: uiText(result.reason === 'conflict' ? 'canvas.error.conflict' : 'canvas.error.save') })
       this.retain()
-      throw new Error(this.snapshot.error)
+      if (result.reason === 'conflict') throw Object.assign(new Error(this.snapshot.error), { code: 'REVISION_CONFLICT', outcome: 'not-applied' })
+      const before = this.baseline
+      const unchanged = await this.owner.api.vault.readFileBaseline(this.path).then(file => before ? file?.baseline?.hash === before.hash && file.baseline.size === before.size && file.baseline.mtimeMs === before.mtimeMs : !file, () => false)
+      if (unchanged) throw Object.assign(new Error(this.snapshot.error), { code: 'WRITE_FAILED', outcome: 'not-applied' })
+      this.uncertain = true
+      throw Object.assign(new Error(this.snapshot.error), { code: 'OUTCOME_UNKNOWN', outcome: 'unknown', outcomeUnknown: true })
     }
     this.baseline = result.baseline; this.written = text
     this.uncertain = false

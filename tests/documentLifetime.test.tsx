@@ -1299,10 +1299,12 @@ describe('exact Canvas mounted controls', () => {
     } finally { inspector?.unmount(); fixture.close() }
   })
 
-  it('copies/cuts explicit cards and pastes remapped internal edges through the native clipboard owner', async () => {
+  it('copies/cuts explicit cards and pastes remapped internal edges through the host clipboard owner', async () => {
     const fixture = await controls(layoutScene)
     let clipboard = ''
-    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: vi.fn(async (text: string) => { clipboard = text }), readText: vi.fn(async () => clipboard) } })
+    const native = { writeText: vi.fn(async () => { throw new Error('Iframe clipboard used') }), readText: vi.fn(async () => { throw new Error('Iframe clipboard used') }) }
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: native })
+    Object.assign(fixture.mock.api.ui, { writeClipboardText: vi.fn(async (text: string) => { clipboard = text }), readClipboardText: vi.fn(async () => clipboard) })
     try {
       act(() => canvasMountedSession(left, fixture.owner).restore({ nodeIds: ['a', 'b'] }))
       await action(fixture, 'clipboard-copy')
@@ -1316,11 +1318,29 @@ describe('exact Canvas mounted controls', () => {
       await action(fixture, 'clipboard-cut')
       expect(parseCanvas(await fixture.mock.api.vault.readFile('Test.canvas'))).toEqual(layoutScene)
       expect(parseCanvas(clipboard).nodes).toEqual(pasted)
+      expect(native.writeText).not.toHaveBeenCalled(); expect(native.readText).not.toHaveBeenCalled()
+    } finally { delete (navigator as { clipboard?: unknown }).clipboard; fixture.close() }
+  })
+  it('refuses Canvas clipboard actions as not applied when the host clipboard is absent or refuses', async () => {
+    const fixture = await controls(layoutScene)
+    const ui = fixture.mock.api.ui as { readClipboardText?: unknown; writeClipboardText?: unknown }
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: vi.fn(async () => {}), readText: vi.fn(async () => serializeCanvas(layoutScene)) } })
+    try {
+      delete ui.readClipboardText; delete ui.writeClipboardText
+      act(() => canvasMountedSession(left, fixture.owner).restore({ nodeIds: ['a'] }))
+      for (const id of ['clipboard-copy', 'clipboard-cut']) await expect(action(fixture, id)).rejects.toMatchObject({ code: 'CLIPBOARD_UNAVAILABLE', outcome: 'not-applied' })
+      await expect(action(fixture, 'clipboard-paste', { at: { x: 0, y: 0 } })).rejects.toMatchObject({ code: 'CLIPBOARD_UNAVAILABLE', outcome: 'not-applied' })
+      ui.writeClipboardText = vi.fn(async () => { throw Object.assign(new Error('Unfocused'), { code: 'CLIPBOARD_UNAVAILABLE', outcome: 'not-applied' }) })
+      ui.readClipboardText = vi.fn(async () => { throw Object.assign(new Error('Unfocused'), { code: 'CLIPBOARD_UNAVAILABLE', outcome: 'not-applied' }) })
+      await expect(action(fixture, 'clipboard-cut')).rejects.toMatchObject({ code: 'CLIPBOARD_UNAVAILABLE', outcome: 'not-applied' })
+      await expect(action(fixture, 'clipboard-paste', { at: { x: 0, y: 0 } })).rejects.toMatchObject({ code: 'CLIPBOARD_UNAVAILABLE', outcome: 'not-applied' })
+      expect(await fixture.mock.api.vault.readFile('Test.canvas')).toBe(serializeCanvas(layoutScene))
+      expect(canvasMountedSession(left, fixture.owner).get().nodeIds).toEqual(['a'])
     } finally { delete (navigator as { clipboard?: unknown }).clipboard; fixture.close() }
   })
   it('reports an unknown cut if selection changes after the clipboard effect and preserves disk bytes', async () => {
     const fixture = await controls(layoutScene)
-    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: vi.fn(async () => { canvasMountedSession(left, fixture.owner).restore({ nodeIds: ['b'] }) }) } })
+    Object.assign(fixture.mock.api.ui, { writeClipboardText: vi.fn(async () => { canvasMountedSession(left, fixture.owner).restore({ nodeIds: ['b'] }) }) })
     try {
       act(() => canvasMountedSession(left, fixture.owner).restore({ nodeIds: ['a'] }))
       await expect(action(fixture, 'clipboard-cut')).rejects.toMatchObject({ outcome: 'unknown', outcomeUnknown: true })
@@ -1380,6 +1400,25 @@ describe('exact Canvas mounted controls', () => {
       await expect(action(fixture, 'convert-text-to-note', { destination: 'Meadow.md', expectedDestinationRevision: observed.revision }, { validateBeforeRun: async () => ++checks < 3 })).rejects.toMatchObject({ outcome: 'unknown', outcomeUnknown: true })
       expect(await fixture.mock.api.vault.readFile('Meadow.md')).toBe('Meadow')
       expect(await fixture.mock.api.vault.readFile('Test.canvas')).toBe(serializeCanvas(layoutScene))
+    } finally { fixture.close() }
+  })
+  it('classifies a refused save as definitely not applied only while the disk baseline is unchanged', async () => {
+    const fixture = await controls(layoutScene)
+    try {
+      const document = canvasDocument(fixture.owner, 'Test.canvas'), inspect = fixture.mock.commands.find(entry => entry.id === 'disk-inspect')!
+      const state = async () => await inspect.run(inspect.input!.parse({ mountedView: left }), { caller: 'agent' }) as { uncertain: boolean; dirty: boolean; error: string }
+      vi.mocked(fixture.mock.api.vault.writeFileGuarded).mockResolvedValueOnce({ ok: false, reason: 'conflict', current: null })
+      await act(async () => { document.setData(scene('Conflict'), left); await expect(document.flush(document.get().data, true, left)).rejects.toMatchObject({ code: 'REVISION_CONFLICT', outcome: 'not-applied' }) })
+      vi.mocked(fixture.mock.api.vault.writeFileGuarded).mockResolvedValueOnce({ ok: false, reason: 'error' })
+      await act(async () => { await expect(document.flush(document.get().data, true, left)).rejects.toMatchObject({ code: 'WRITE_FAILED', outcome: 'not-applied' }) })
+      expect(await state()).toMatchObject({ uncertain: false, dirty: true })
+      expect(await fixture.mock.api.vault.readFile('Test.canvas')).toBe(serializeCanvas(layoutScene))
+      vi.mocked(fixture.mock.api.vault.writeFileGuarded).mockImplementationOnce(async (path, text) => { await fixture.mock.api.vault.writeFile(path, text); return { ok: false, reason: 'error' } })
+      await act(async () => { await expect(document.flush(document.get().data, true, left)).rejects.toMatchObject({ code: 'OUTCOME_UNKNOWN', outcome: 'unknown', outcomeUnknown: true }) })
+      expect(await state()).toMatchObject({ uncertain: true, dirty: true })
+      const calls = vi.mocked(fixture.mock.api.vault.writeFileGuarded).mock.calls.length
+      await act(async () => { await expect(document.flush(document.get().data, true, left)).rejects.toThrow() })
+      expect(vi.mocked(fixture.mock.api.vault.writeFileGuarded).mock.calls).toHaveLength(calls)
     } finally { fixture.close() }
   })
   it('retries the exact retained draft after a known refused save, binding its current disk/draft revisions', async () => {

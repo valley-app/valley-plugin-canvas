@@ -288,9 +288,10 @@ export function registerCanvasSurfaces(pluginApi: ValleyPluginApi, owner = captu
           return { value: inspectView(input.mountedView), revert: null }
         }
         if (action.startsWith('clipboard-')) {
-          if (!navigator.clipboard) throw Object.assign(new Error('The native clipboard is unavailable.'), { code: 'CLIPBOARD_UNAVAILABLE', outcome: 'not-applied' })
+          const clipboard = pluginApi.ui as { readClipboardText?: () => Promise<string>; writeClipboardText?: (text: string) => Promise<void> }, unavailable = () => Object.assign(new Error('The host clipboard is unavailable.'), { code: 'CLIPBOARD_UNAVAILABLE', outcome: 'not-applied' })
           if (action === 'clipboard-paste') {
-            const text = await navigator.clipboard.readText()
+            if (typeof clipboard.readClipboardText !== 'function') throw unavailable()
+            const text = await clipboard.readClipboardText()
             assertCurrent(true)
             if (new TextEncoder().encode(text).byteLength > 512 * 1024) throw Object.assign(new Error('Canvas clipboard content exceeds 512 KiB.'), { code: 'RESOURCE_LIMIT', outcome: 'not-applied' })
             if (!text.trim()) throw Object.assign(new Error('The clipboard has no Canvas content.'), { code: 'CLIPBOARD_EMPTY', outcome: 'not-applied' })
@@ -311,7 +312,8 @@ export function registerCanvasSurfaces(pluginApi: ValleyPluginApi, owner = captu
             if (!input.nodeIds.length || input.edgeId) throw Object.assign(new Error('Select Canvas cards to copy.'), { code: 'INVALID_SELECTION', outcome: 'not-applied' })
             const selection = new Set(input.nodeIds), content = serializeCanvas({ nodes: original.data.nodes.filter(node => selection.has(node.id)), edges: original.data.edges.filter(edge => selection.has(edge.fromNode) && selection.has(edge.toNode)) })
             if (new TextEncoder().encode(content).byteLength > 512 * 1024) throw Object.assign(new Error('Canvas clipboard content exceeds 512 KiB.'), { code: 'RESOURCE_LIMIT', outcome: 'not-applied' })
-            await navigator.clipboard.writeText(content)
+            if (typeof clipboard.writeClipboardText !== 'function') throw unavailable()
+            await clipboard.writeClipboardText(content)
             try {
               assertCurrent(true)
               if (action === 'clipboard-cut') {

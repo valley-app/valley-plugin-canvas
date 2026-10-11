@@ -67,6 +67,23 @@ describe('canvas:create', () => {
     expect(mock.api.workspace.openFile).not.toHaveBeenCalled()
   })
 
+  it('create-new creates the first free canvas in its own write without a nested write dispatch', async () => {
+    const mock = createMockValleyApi({ manifest: { id: 'canvas' }, activePath: 'Boards/Index.md', files: { 'Boards/Untitled.canvas': 'occupied' } })
+    registerCanvasCommands(mock.api)
+    // Main queues a nested write behind the running one until the renderer timeout; model that as a dispatch that never settles.
+    const nested = vi.spyOn(mock.api.commands, 'executeOwn').mockImplementation(() => new Promise(() => {}))
+    const started = Date.now()
+    expect(await mock.api.commands.execute('canvas:create-new', {})).toMatchObject({ ok: true, value: null })
+    expect(Date.now() - started).toBeLessThan(1000)
+    expect(nested).not.toHaveBeenCalled()
+    expect(mock.api.vault.writeFileGuarded).toHaveBeenCalledOnce()
+    expect(await mock.api.vault.readFile('Boards/Untitled 1.canvas')).toBe(EMPTY_CANVAS); expect(await mock.api.vault.stat('Boards/Untitled 2.canvas')).toBeNull()
+    expect(mock.api.workspace.openFile).toHaveBeenCalledOnce(); expect(mock.api.workspace.openFile).toHaveBeenCalledWith('Boards/Untitled 1.canvas')
+    expect(mock.busUndo).toHaveLength(1)
+    await mock.busUndo[0].undo()
+    expect(await mock.api.vault.stat('Boards/Untitled 1.canvas')).toBeNull(); expect(await mock.api.vault.readFile('Boards/Untitled.canvas')).toBe('occupied')
+  })
+
   it('refuses undo after the created file was edited', async () => {
     const mock = createMockValleyApi({ manifest: { id: 'canvas' } })
     registerCanvasCommands(mock.api)
