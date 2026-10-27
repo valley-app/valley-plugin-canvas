@@ -99,3 +99,7 @@ reads, cancellation, owner replacement, lost acknowledgements and independent
 readback. Deployed Electron and external CLI/MCP acceptance are separate gates.
 Existing workflow adapter contracts are unchanged and are outside this change;
 old pinned renderer input schemas do not imply compatibility with required revisions.
+
+The 2.1.9 release rebuilds `runtime/` from the current source. The 2.1.8 runtime
+predated the source's editor draft registration, so the host refused every save
+from an open Canvas view; 2.1.9 registers each mounted view and saves through it.
