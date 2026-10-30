@@ -156,6 +156,7 @@ export class CanvasDocument {
         const token = Symbol()
         this.editorLeases.add(token)
         for (const entry of this.editors.values()) entry.freeze(true)
+        notifyCanvas(this.owner)
         let released = false
         return {
           validate: () => { if (released) throw new Error('The Canvas draft lease was released.'); return assert() },
@@ -164,6 +165,8 @@ export class CanvasDocument {
             released = true
             this.editorLeases.delete(token)
             if (!this.isFrozen()) { for (const entry of this.editors.values()) entry.freeze(false); if (!this.dirty && this.leases) void this.load() }
+            // View controls derive from the frozen state; the host only sees them again when they are republished.
+            notifyCanvas(this.owner)
           }
         }
       }

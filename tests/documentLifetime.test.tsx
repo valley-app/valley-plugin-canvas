@@ -73,14 +73,21 @@ describe('mounted Canvas draft admission', () => {
     expect(() => provider.prepare(dirty.revision, { operationId: 'background', fenceId: 'fence', deadline: Date.now() + 5000, ownSave: false })).toThrow('changed or is unavailable')
     raw.dirty = false; raw.revision++
     const clean = await provider.getSnapshot()
+    const published = vi.fn()
+    const unsubscribe = subscribeCanvas(published, owner)
     const lease = await provider.prepare(clean.revision, { operationId: 'background', fenceId: 'fence', deadline: Date.now() + 5000, ownSave: false })
+    expect(published).toHaveBeenCalledTimes(1)
     document.setData(scene('Blocked'), view('left')); document.schedule(scene('Blocked'), view('left'))
     expect(document.get().data).toEqual(original)
     await expect(document.commit(scene('Blocked'), serializeCanvas(original))).rejects.toThrow('read-only')
     expect(await lease.validate()).toEqual(clean)
     expect(freeze).toHaveBeenLastCalledWith(true)
+    const beforeRelease = published.mock.calls.length
     await lease.release()
     expect(freeze).toHaveBeenLastCalledWith(false)
+    // Controls derive from the frozen state, so a lease change republishes them; the host keeps the last published copy.
+    expect(published.mock.calls.length).toBeGreaterThan(beforeRelease)
+    unsubscribe()
     off(); detach()
     expect(mock.api.vault.writeFileGuarded).not.toHaveBeenCalled()
   })
