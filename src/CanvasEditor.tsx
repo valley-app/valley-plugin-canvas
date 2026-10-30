@@ -173,11 +173,12 @@ const CanvasEditor = ({ relPath, owner, mountedView }: { relPath: string; owner:
     if (pending?.edgeId !== undefined) setSelectedEdge(pending.edgeId)
   }, [snapshot, fitted, context, viewportSize, dimensions, setViewport, setSelection, setSelectedEdge, relPath, owner])
 
+  const controlsBlocked = (current: ReturnType<typeof document.get>): boolean => document.isFrozen() || current.busy || current.invalid || modelRef.current !== current.data || Boolean(editingRef.current || editingEdgeRef.current || modalRef.current || interactionActive.current() || propertyControls.size)
   const bridgeRef = React.useMemo<{ current: CanvasSession | null }>(() => ({ current: null }), [document])
   bridgeRef.current = {
     get: () => {
       const current = document.get()
-      const state = { data: current.data, viewport: viewportRef.current, nodeIds: [...selectionRef.current], edgeId: selectedEdgeRef.current, readOnly: readOnly || document.isFrozen() || current.invalid || current.busy || !current.ready || !isViewActive(), locked: readOnly, ready: current.ready && isViewActive(), invalid: current.invalid, revision: serializeCanvas(current.data), error: current.error, controlsBlocked: document.isFrozen() || current.busy || current.invalid || modelRef.current !== current.data || Boolean(editingRef.current || editingEdgeRef.current || modalRef.current || interactionActive.current() || propertyControls.size) }
+      const state = { data: current.data, viewport: viewportRef.current, nodeIds: [...selectionRef.current], edgeId: selectedEdgeRef.current, readOnly: readOnly || document.isFrozen() || current.invalid || current.busy || !current.ready || !isViewActive(), locked: readOnly, ready: current.ready && isViewActive(), invalid: current.invalid, revision: serializeCanvas(current.data), error: current.error, controlsBlocked: controlsBlocked(current) }
       const signature = JSON.stringify(state)
       if (signature !== context.signature) { context.signature = signature; context.revision++ }
       return { ...state, viewRevision: `canvas-view:${mountedView?.mountId ?? 'legacy'}:${mountedView?.generation ?? 0}:${context.revision}` }
@@ -321,6 +322,15 @@ const CanvasEditor = ({ relPath, owner, mountedView }: { relPath: string; owner:
   const { marquee, preview, ghost, snapGuides, draggingIds, panning, onRootPointerDown, onRootPointerMove, onRootPointerUp, onNodePointerDown, onResizeStart, onConnectStart, onCreateStart, onEdgePointerDown, onSelectionPointerDown, cancelInteraction } = gestures
   interactionActive.current = gestures.isInteracting
   React.useEffect(() => notifyCanvas(owner), [owner, model, viewport, selection, selectedEdge, readOnly, saveError, editingId, editingEdgeLabel, modal, gestures.interacting])
+  // View controls are published only on a notify; republish whenever a render settles them into a different state.
+  const publishedControls = React.useRef<string | undefined>(undefined)
+  React.useEffect(() => {
+    const current = document.get()
+    const signature = `${current.ready && isViewActive()}:${controlsBlocked(current)}`
+    if (signature === publishedControls.current) return
+    publishedControls.current = signature
+    notifyCanvas(owner)
+  })
 
   // ── History and clipboard ────────────────────────────────────────────────────
   const runNativeAction = async (id: string, extra: Record<string, unknown> = {}): Promise<void> => {

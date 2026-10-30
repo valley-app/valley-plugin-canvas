@@ -768,6 +768,21 @@ describe('exact Canvas mounted controls', () => {
       expect(parseCanvas(await fixture.mock.api.vault.readFile('Test.canvas'))).toEqual({ ...data, nodes: data.nodes.map(node => node.id === 'a' ? { ...node, x: 17, width: 260 } : node) })
     } finally { controller.abort(); held.resolve(); await pending?.catch(() => {}); off(); inspector?.unmount(); lockedInspector?.unmount(); fixture.close() }
   })
+  it('leaves the last published controls equal to the settled state after a Properties command edit', async () => {
+    const fixture = await controls(connected)
+    const published: boolean[] = []
+    const off = subscribeCanvas(() => { published.push(fixture.provider.getSnapshot(fixture.context(left)).items.zoom.disabled === true) }, fixture.owner)
+    try {
+      await change(fixture, left, 'select-node', 'a')
+      const command = fixture.mock.commands.find(entry => entry.id === 'properties-edit')!
+      const input = command.input!.parse({ subject: { pluginId: 'canvas', surface: 'main_workspace', view: { path: 'Test.canvas', nodeIds: ['a'], edgeId: null }, mountedView: left }, expectedRevision: canvasMountedSession(left, fixture.owner).get().revision, values: { x: 17 } })
+      published.length = 0
+      await act(async () => { await command.run(input, { caller: 'agent', cancellation: new AbortController().signal, validateBeforeRun: async () => true }) })
+      await waitFor(() => expect(fixture.provider.getSnapshot(fixture.context(left)).items.zoom.disabled).toBe(false))
+      expect(published).toContain(true)
+      expect(published.at(-1)).toBe(false)
+    } finally { off(); fixture.close() }
+  })
   it('preserves an edited Properties field through an overlapping command and refuses its stale save', async () => {
     const fixture = await controls(connected)
     let inspector: ReturnType<typeof render> | undefined
