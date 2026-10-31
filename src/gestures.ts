@@ -421,5 +421,8 @@ export function useCanvasGestures({ rootRef, modelRef, readOnlyRef, viewport, se
     setPreview(null); setMarquee(null); setDraggingIds(new Set()); setSnapGuides([]); setGhost(null); setPanning(false)
   }
 
-  return { interacting, isInteracting: () => interactionRef.current !== null, marquee, preview, ghost, snapGuides, draggingIds, panning, onRootPointerDown, onRootPointerMove, onRootPointerUp, onNodePointerDown, onResizeStart, onConnectStart, onReconnect, onCreateStart, onEdgePointerDown, onSelectionPointerDown, cancelInteraction }
+  // A card press that has neither moved nor duplicated has changed nothing; its release can land outside the Canvas
+  // (a sidebar opening under the pointer), and a buttonless move already ends it.
+  const isInteracting = (): boolean => { const it = interactionRef.current; return it !== null && !(it.type === 'drag' && !it.engaged && !it.before) }
+  return { interacting, isInteracting, marquee, preview, ghost, snapGuides, draggingIds, panning, onRootPointerDown, onRootPointerMove, onRootPointerUp, onNodePointerDown, onResizeStart, onConnectStart, onReconnect, onCreateStart, onEdgePointerDown, onSelectionPointerDown, cancelInteraction }
 }

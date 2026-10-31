@@ -783,6 +783,17 @@ describe('exact Canvas mounted controls', () => {
       expect(published.at(-1)).toBe(false)
     } finally { off(); fixture.close() }
   })
+  it('keeps exact controls available after a card press whose release never reaches the Canvas', async () => {
+    const fixture = await controls(connected)
+    try {
+      const card = fixture.mounted.container.querySelectorAll('.canvas-root')[0].querySelector('[data-node-id="a"]')!
+      await act(async () => { fireEvent.pointerDown(card, { button: 0, pointerId: 3, clientX: 10, clientY: 10 }) })
+      expect(canvasMountedSession(left, fixture.owner).get().nodeIds).toEqual(['a'])
+      expect(canvasMountedSession(left, fixture.owner).get().controlsBlocked).toBe(false)
+      expect(fixture.provider.getSnapshot(fixture.context(left)).items.zoom.disabled).toBe(false)
+      expect(await change(fixture, left, 'zoom', 1.5)).toMatchObject({ items: { zoom: { value: 1.5 } } })
+    } finally { fixture.close() }
+  })
   it('preserves an edited Properties field through an overlapping command and refuses its stale save', async () => {
     const fixture = await controls(connected)
     let inspector: ReturnType<typeof render> | undefined
