@@ -113,6 +113,21 @@ describe('explicit canvas edits', () => {
     await expect(result.revert.run()).rejects.toThrow('newer work')
   })
 
+  it('reports stale, replayed and unobserved writes as not applied', async () => {
+    const mock = setup()
+    const notApplied = (code: string) => expect.objectContaining({ code, outcome: 'not-applied' })
+    await expect(editCanvasTarget(mock.api, 'Board.canvas', { type: 'delete-nodes', ids: ['card'] }, 'stale')).rejects.toEqual(notApplied('REVISION_CONFLICT'))
+    const first = await editCanvasTarget(mock.api, 'Board.canvas', { type: 'delete-nodes', ids: ['card'] }, serializeCanvas(original))
+    expect(first.value.revision).not.toBe(serializeCanvas(original))
+    await expect(editCanvasTarget(mock.api, 'Board.canvas', { type: 'delete-nodes', ids: ['card'] }, serializeCanvas(original))).rejects.toEqual(notApplied('REVISION_CONFLICT'))
+    await expect(editCanvasTarget(mock.api, 'Board.canvas', { type: 'update-node', id: 'missing', values: { text: 'x' } }, first.value.revision)).rejects.toEqual(notApplied('INVALID_INPUT'))
+    await expect(editCanvasTarget(mock.api, 'Gone.canvas', { type: 'delete-nodes', ids: ['card'] }, 'x')).rejects.toEqual(expect.objectContaining({ outcome: 'not-applied' }))
+    const create = mock.commands.find((command) => command.id === 'create') as unknown as { run(input: unknown, context: unknown): Promise<unknown> }
+    await expect(create.run({ path: 'Fresh.canvas', expectedRevision: 'never-observed', open: false }, {})).rejects.toEqual(notApplied('REVISION_CONFLICT'))
+    await expect(create.run({ path: 'Board.canvas', expectedRevision: 'never-observed', open: false }, {})).rejects.toEqual(notApplied('REVISION_CONFLICT'))
+    expect(await mock.api.vault.stat('Fresh.canvas')).toBeNull()
+  })
+
   it('rejects stale, missing, invisible fields and unsafe links before writing', async () => {
     const mock = setup()
     await expect(editCanvasTarget(mock.api, 'Board.canvas', { type: 'delete-nodes', ids: ['card'] }, 'stale')).rejects.toThrow('changed')

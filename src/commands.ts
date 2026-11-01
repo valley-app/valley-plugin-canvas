@@ -18,15 +18,16 @@ function activeFolder(api: ValleyPluginApi): string {
 
 const absence = new WeakMap<CanvasOwner, Map<string, string>>()
 function missingRevisions(owner: CanvasOwner): Map<string, string> { let values = absence.get(owner); if (!values) { values = new Map(); absence.set(owner, values) } return values }
+function refused(message: string, code: string): Error { return Object.assign(new Error(message), { code, outcome: 'not-applied' as const }) }
 const mutationOutput = objectSchema({ path: stringSchema, data: canvasDataSchema, revision: { type: 'string' } }, ['path', 'data', 'revision'])
 async function observeCreation(api: ValleyPluginApi, path: string, owner: CanvasOwner, assertActive: () => void) {
-  if (!path.endsWith('.canvas') || normalizeRelPathOpt(path) !== path) throw new Error('Expected a vault-relative canvas path.')
+  if (!path.endsWith('.canvas') || normalizeRelPathOpt(path) !== path) throw refused('Expected a vault-relative canvas path.', 'INVALID_INPUT')
   const file = await owner.run(() => { assertActive(); return api.vault.readFileBaseline(path) })
   assertActive()
-  if (!file || file.baseline || canvasSession(path, owner) || canvasDraft(path, owner)) throw new Error('The canvas path is occupied or has a retained draft.')
+  if (!file || file.baseline || canvasSession(path, owner) || canvasDraft(path, owner)) throw refused('The canvas path is occupied or has a retained draft.', 'PATH_OCCUPIED')
   const draft = await owner.run(() => api.vault.drafts.read(path, 'editor'))
   assertActive()
-  if (draft) throw new Error('The canvas has an unsaved draft.')
+  if (draft) throw refused('The canvas has an unsaved draft.', 'UNSAVED_DRAFT')
   const entries = missingRevisions(owner)
   let expectedRevision = entries.get(path)
   if (!expectedRevision) {
@@ -71,9 +72,9 @@ export function registerCanvasCommands(api: ValleyPluginApi, owner = captureCanv
   // create-new runs this in its own command context: a nested executeOwn('create') would queue a second write behind the running one until the renderer timeout.
   const createCanvas = async ({ path, expectedRevision, open }: { path: string; expectedRevision: string; open: boolean }, context: CommandContext) => {
     assertActive()
-    if (missingRevisions(owner).get(path) !== expectedRevision) throw new Error('Inspect the unused canvas path before creating it.')
+    if (missingRevisions(owner).get(path) !== expectedRevision) throw refused('Inspect the unused canvas path before creating it.', 'REVISION_CONFLICT')
     const observed = await observeCreation(api, path, owner, assertActive)
-    if (observed.expectedRevision !== expectedRevision) throw new Error('The canvas path changed.')
+    if (observed.expectedRevision !== expectedRevision) throw refused('The canvas path changed.', 'REVISION_CONFLICT')
     await guard(context)
     const written = await owner.run(() => { assertActive(); return api.vault.writeFileGuarded(path, EMPTY_CANVAS, null) })
     if (!written.ok) throw Object.assign(new Error('The canvas could not be created.'), { outcome: written.reason === 'conflict' ? 'not-applied' : 'unknown', code: written.reason === 'conflict' ? 'REVISION_CONFLICT' : 'OUTCOME_UNKNOWN' })
@@ -103,19 +104,19 @@ export function registerCanvasCommands(api: ValleyPluginApi, owner = captureCanv
 
 export async function readCanvasTarget(api: ValleyPluginApi, path: string, owner = captureCanvasOwner(api), assertActive = owner.assertActive, exactSession?: () => CanvasSession) {
   assertActive()
-  if (!path.endsWith('.canvas') || normalizeRelPathOpt(path) !== path) throw new Error('Expected a vault-relative canvas path.')
+  if (!path.endsWith('.canvas') || normalizeRelPathOpt(path) !== path) throw refused('Expected a vault-relative canvas path.', 'INVALID_INPUT')
   const session = exactSession ? exactSession() : canvasSession(path, owner)
-  if (session) { const snapshot = session.get(); if (!snapshot.ready) throw new Error('The canvas is still loading.'); if (snapshot.invalid) throw new Error('The canvas file is invalid.'); return { data: snapshot.data, revision: snapshot.revision, baseline: null, session, exactSession } }
-  if (canvasDraft(path, owner)) throw new Error('The canvas has an unsaved draft. Reopen it and resolve the save error before editing.')
+  if (session) { const snapshot = session.get(); if (!snapshot.ready) throw refused('The canvas is still loading.', 'NOT_READY'); if (snapshot.invalid) throw refused('The canvas file is invalid.', 'INVALID_DOCUMENT'); return { data: snapshot.data, revision: snapshot.revision, baseline: null, session, exactSession } }
+  if (canvasDraft(path, owner)) throw refused('The canvas has an unsaved draft. Reopen it and resolve the save error before editing.', 'UNSAVED_DRAFT')
   const recovery = await owner.run(() => { assertActive(); return api.vault.drafts.read(path, 'editor') })
   assertActive()
-  if (recovery) throw new Error('The canvas has an unsaved draft. Reopen it and resolve the save error before editing.')
+  if (recovery) throw refused('The canvas has an unsaved draft. Reopen it and resolve the save error before editing.', 'UNSAVED_DRAFT')
   const file = await owner.run(() => { assertActive(); return api.vault.readFileBaseline(path) })
   assertActive()
-  if (canvasSession(path, owner) || canvasDraft(path, owner)) throw new Error('The canvas changed. Inspect its active draft before editing.')
-  if (!file) throw new Error('The canvas file no longer exists.')
+  if (canvasSession(path, owner) || canvasDraft(path, owner)) throw refused('The canvas changed. Inspect its active draft before editing.', 'REVISION_CONFLICT')
+  if (!file) throw refused('The canvas file no longer exists.', 'NOT_FOUND')
   const parsed = parseCanvasDocument(file.content)
-  if (!parsed.valid) throw new Error('The canvas file is invalid.')
+  if (!parsed.valid) throw refused('The canvas file is invalid.', 'INVALID_DOCUMENT')
   const data = parsed.data
   return { data, revision: serializeCanvas(data), baseline: file.baseline, session: undefined, exactSession: undefined }
 }
@@ -149,16 +150,18 @@ async function commitTarget(owner: CanvasOwner, path: string, data: CanvasData, 
 export async function restoreCanvasTarget(owner: CanvasOwner, path: string, data: CanvasData, revision: string, assertActive = owner.assertActive): Promise<void> {
   const captured = structuredClone(data)
   const current = await readCanvasTarget(owner.api, path, owner, assertActive)
-  if (current.revision !== revision) throw new Error('The canvas changed after this edit. Undo would overwrite newer work.')
+  if (current.revision !== revision) throw refused('The canvas changed after this edit. Undo would overwrite newer work.', 'REVISION_CONFLICT')
   await commitTarget(owner, path, captured, current, assertActive)
 }
 export async function editCanvasTarget(api: ValleyPluginApi, path: string, operation: unknown, expectedRevision: string, owner = captureCanvasOwner(api), assertActive = owner.assertActive, beforeWrite?: () => Promise<void>, exactSession?: () => CanvasSession, beforeDispatch?: () => void) {
   assertActive()
   const accepted = structuredClone(operation)
   const previous = await readCanvasTarget(api, path, owner, assertActive, exactSession)
-  if (!expectedRevision || expectedRevision !== previous.revision) throw new Error('The canvas changed. Inspect it again before editing.')
+  if (!expectedRevision || expectedRevision !== previous.revision) throw refused('The canvas changed. Inspect it again before editing.', 'REVISION_CONFLICT')
   const before = structuredClone(previous.data)
-  const next = applyCanvasOperation(before, accepted)
+  let next: CanvasData
+  try { next = applyCanvasOperation(before, accepted) }
+  catch (error) { throw (error as { outcome?: unknown })?.outcome ? error : refused(error instanceof Error ? error.message : String(error), 'INVALID_INPUT') }
   const nextRevision = serializeCanvas(next)
   await commitTarget(owner, path, next, previous, assertActive, beforeWrite, beforeDispatch)
   const after = structuredClone(next)
