@@ -1,4 +1,5 @@
 import type { ValleyPluginApi } from '@valley/plugin-sdk'
+import type { FunctionComponent, MemoExoticComponent } from 'react'
 
 export let React!: typeof import('react')
 export let api!: ValleyPluginApi
@@ -73,4 +74,21 @@ export function initRuntime(a: ValleyPluginApi): CanvasOwner {
   React = a.React
   current = createOwner(a, previous?.root === a.getState().vault?.path ? previous : owners.get(a))
   return current
+}
+
+/** A callback whose identity never changes but always runs the latest render's function, so memoized cards skip re-rendering. */
+export function useStableCallback<A extends unknown[], R>(fn: (...args: A) => R): (...args: A) => R {
+  const latest = React.useRef(fn)
+  latest.current = fn
+  return React.useCallback((...args: A) => latest.current(...args), [])
+}
+
+const memoCache = new WeakMap<object, { react: typeof import('react'); component: unknown }>()
+/** `React.memo` for a module-level component; React is injected at runtime, so the wrapper is built on first use. */
+export function memoized<P extends object>(component: FunctionComponent<P>): MemoExoticComponent<FunctionComponent<P>> {
+  const cached = memoCache.get(component)
+  if (cached?.react === React) return cached.component as MemoExoticComponent<FunctionComponent<P>>
+  const value = React.memo(component as FunctionComponent<object>) as unknown as MemoExoticComponent<FunctionComponent<P>>
+  memoCache.set(component, { react: React, component: value })
+  return value
 }

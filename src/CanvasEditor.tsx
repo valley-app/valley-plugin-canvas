@@ -2,7 +2,7 @@ import { registerCanvasSession, pendingCanvasView, notifyCanvas, type CanvasSess
 import { canvasDocument } from './document'
 import { applyCanvasSelectionAction } from './operations'
 import type { MountedPluginView } from '@valley/plugin-sdk'
-import { React, captureCanvasOwner, type CanvasOwner } from './runtime'
+import { React, captureCanvasOwner, memoized, useStableCallback, type CanvasOwner } from './runtime'
 import { classifyFilePath } from '@valley/plugin-sdk/fileTypes'
 import { useCanvasViewport } from './viewport'
 import { useCanvasSelection } from './selection'
@@ -101,7 +101,7 @@ type Modal =
 const CanvasEditor = ({ relPath, owner, mountedView }: { relPath: string; owner: CanvasOwner; mountedView?: MountedPluginView }): ReturnType<typeof React.createElement> => {
   const api = owner.api
   const document = React.useMemo(() => canvasDocument(owner, relPath), [owner, relPath])
-  const context = React.useMemo(() => ({ mounted: true, signature: '', revision: 0, draftRevision: 0, draftSignature: '', rawDrafts: new Set<string>() }), [document, mountedView?.mountId, mountedView?.generation])
+  const context = React.useMemo(() => ({ mounted: true, signature: '', signedRevision: '', revisionOf: null as CanvasData | null, documentRevision: '', revision: 0, draftRevision: 0, draftSignature: '', rawDrafts: new Set<string>() }), [document, mountedView?.mountId, mountedView?.generation])
   const latestContext = React.useRef(context)
   latestContext.current = context
   const isViewActive = React.useCallback(() => context.mounted && latestContext.current === context && owner.isActive(), [context, owner])
@@ -178,9 +178,10 @@ const CanvasEditor = ({ relPath, owner, mountedView }: { relPath: string; owner:
   bridgeRef.current = {
     get: () => {
       const current = document.get()
-      const state = { data: current.data, viewport: viewportRef.current, nodeIds: [...selectionRef.current], edgeId: selectedEdgeRef.current, readOnly: readOnly || document.isFrozen() || current.invalid || current.busy || !current.ready || !isViewActive(), locked: readOnly, ready: current.ready && isViewActive(), invalid: current.invalid, revision: serializeCanvas(current.data), error: current.error, controlsBlocked: controlsBlocked(current) }
-      const signature = JSON.stringify(state)
-      if (signature !== context.signature) { context.signature = signature; context.revision++ }
+      if (context.revisionOf !== current.data) { context.revisionOf = current.data; context.documentRevision = serializeCanvas(current.data) }
+      const state = { data: current.data, viewport: viewportRef.current, nodeIds: [...selectionRef.current], edgeId: selectedEdgeRef.current, readOnly: readOnly || document.isFrozen() || current.invalid || current.busy || !current.ready || !isViewActive(), locked: readOnly, ready: current.ready && isViewActive(), invalid: current.invalid, revision: context.documentRevision, error: current.error, controlsBlocked: controlsBlocked(current) }
+      const signature = JSON.stringify({ ...state, data: undefined, revision: undefined })
+      if (signature !== context.signature || state.revision !== context.signedRevision) { context.signature = signature; context.signedRevision = state.revision; context.revision++ }
       return { ...state, viewRevision: `canvas-view:${mountedView?.mountId ?? 'legacy'}:${mountedView?.generation ?? 0}:${context.revision}` }
     },
     commit: async (next, revision, beforeWrite, beforeDispatch) => {
@@ -321,6 +322,22 @@ const CanvasEditor = ({ relPath, owner, mountedView }: { relPath: string; owner:
   const gestures = useCanvasGestures({ rootRef, modelRef, readOnlyRef, viewport: viewportState, selection: selectionState, setModelBoth, apply, pushUndo, scheduleSave, addOfKind, onCreateRect })
   const { marquee, preview, ghost, snapGuides, draggingIds, panning, onRootPointerDown, onRootPointerMove, onRootPointerUp, onNodePointerDown, onResizeStart, onConnectStart, onCreateStart, onEdgePointerDown, onSelectionPointerDown, cancelInteraction } = gestures
   interactionActive.current = gestures.isInteracting
+  const Node = memoized(NodeView)
+  const Edges = memoized(EdgeLayer)
+  const nodeHandlers = {
+    onNodePointerDown: useStableCallback(onNodePointerDown),
+    onResizeStart: useStableCallback(onResizeStart),
+    onConnectStart: useStableCallback(onConnectStart),
+    onStartEdit: useStableCallback((n: CanvasNode) => { if (!readOnlyRef.current) { replaceSelection(new Set([n.id])); setEditingId(n.id) } }),
+    onCommit: useStableCallback((node: CanvasNode, patch: Partial<CanvasNode>) => commitNode(node, patch)),
+    onCancelEdit: useStableCallback(() => setEditingId(null))
+  }
+  const edgeHandlers = {
+    onEdgePointerDown: useStableCallback(onEdgePointerDown),
+    onStartLabelEdit: useStableCallback((id: string) => { if (!readOnlyRef.current) setEditingEdgeLabel(id) }),
+    onCommitLabel: useStableCallback((id: string, label: string) => commitEdgeLabel(id, label)),
+    onCancelLabel: useStableCallback(() => setEditingEdgeLabel(null))
+  }
   React.useEffect(() => notifyCanvas(owner), [owner, model, viewport, selection, selectedEdge, readOnly, saveError, editingId, editingEdgeLabel, modal, gestures.interacting])
   // View controls are published only on a notify; republish whenever a render settles them into a different state.
   const publishedControls = React.useRef<string | undefined>(undefined)
@@ -775,21 +792,18 @@ const CanvasEditor = ({ relPath, owner, mountedView }: { relPath: string; owner:
         className="canvas-world"
         style={{ transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.zoom})`, ['--zm' as string]: String(zm) } as React.CSSProperties}
       >
-        <EdgeLayer
+        <Edges
           data={model}
           nodesById={nodesById}
           selectedEdge={selectedEdge}
           editingLabel={editingEdgeLabel}
           zm={zm}
           connecting={Boolean(preview)}
-          onEdgePointerDown={onEdgePointerDown}
-          onStartLabelEdit={(id) => { if (!readOnlyRef.current) setEditingEdgeLabel(id) }}
-          onCommitLabel={commitEdgeLabel}
-          onCancelLabel={() => setEditingEdgeLabel(null)}
+          {...edgeHandlers}
           preview={preview}
         />
         {model.nodes.map((node, index) => (
-          <NodeView
+          <Node
             owner={owner}
             previewEnabled={!zoomedOut}
             sourcePath={relPath}
@@ -800,14 +814,9 @@ const CanvasEditor = ({ relPath, owner, mountedView }: { relPath: string; owner:
             focused={selection.size === 1 && selection.has(node.id) && !selectedEdge}
             editing={editingId === node.id}
             dragging={draggingIds.has(node.id)}
-            zoom={viewport.zoom}
+            zoom={node.type === 'link' ? viewport.zoom : 1}
             readOnly={locked}
-            onNodePointerDown={onNodePointerDown}
-            onResizeStart={onResizeStart}
-            onConnectStart={onConnectStart}
-            onStartEdit={(n) => { if (!readOnlyRef.current) { replaceSelection(new Set([n.id])); setEditingId(n.id) } }}
-            onCommit={commitNode}
-            onCancelEdit={() => setEditingId(null)}
+            {...nodeHandlers}
           />
         ))}
       </div>

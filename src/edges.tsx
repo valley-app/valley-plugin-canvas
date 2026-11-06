@@ -1,4 +1,4 @@
-import { React } from './runtime'
+import { React, memoized } from './runtime'
 import {
   type CanvasData,
   type CanvasEdge,
@@ -43,11 +43,22 @@ export interface EdgeGeom {
   toArrow: boolean
 }
 
+/** Card and edge objects are replaced on every change, so geometry is reused until either end or the zoom moves. */
+const geometryCache = new WeakMap<CanvasEdge, { a: CanvasNode; b: CanvasNode; zm: number; geom: EdgeGeom }>()
+
 /** Where an edge runs, or null when either end is not on the board. */
 export function edgeGeometry(edge: CanvasEdge, nodes: Map<string, CanvasNode>, zm: number): EdgeGeom | null {
   const a = nodes.get(edge.fromNode)
   const b = nodes.get(edge.toNode)
   if (!a || !b) return null
+  const cached = geometryCache.get(edge)
+  if (cached && cached.a === a && cached.b === b && cached.zm === zm) return cached.geom
+  const geom = computeEdgeGeometry(edge, a, b, zm)
+  geometryCache.set(edge, { a, b, zm, geom })
+  return geom
+}
+
+function computeEdgeGeometry(edge: CanvasEdge, a: CanvasNode, b: CanvasNode, zm: number): EdgeGeom {
   const ra = nodeRect(a)
   const rb = nodeRect(b)
   const fromSide = validSide(edge.fromSide) ?? chooseSide(ra, rb)
@@ -102,19 +113,19 @@ export interface EdgeLayerProps {
  */
 export const EdgeLayer = (props: EdgeLayerProps): ReturnType<typeof React.createElement> => {
   const { data, nodesById, selectedEdge, editingLabel, zm, preview } = props
+  const Edge = memoized(EdgeView)
   // Size the SVG to the node bounds (+ padding) and give it a matching viewBox so
   // its user space is identical to world space — a 0×0 SVG does not paint its
   // overflow in Chromium, so edges drawn at world coords were being culled.
-  const bounds = boundsOf(data.nodes)
+  const bounds = React.useMemo(() => boundsOf(data.nodes), [data.nodes])
+  const geoms = React.useMemo(() => data.edges
+    .map((edge) => edgeGeometry(edge, nodesById, zm))
+    .filter((g): g is EdgeGeom => g !== null), [data.edges, nodesById, zm])
   if (!bounds) return <svg className="canvas-edges" />
   const minX = bounds.x - SVG_PAD
   const minY = bounds.y - SVG_PAD
   const w = bounds.width + SVG_PAD * 2
   const h = bounds.height + SVG_PAD * 2
-
-  const geoms = data.edges
-    .map((edge) => edgeGeometry(edge, nodesById, zm))
-    .filter((g): g is EdgeGeom => g !== null)
 
   return (
     <>
@@ -125,18 +136,7 @@ export const EdgeLayer = (props: EdgeLayerProps): ReturnType<typeof React.create
         height={h}
         viewBox={`${minX} ${minY} ${w} ${h}`}
       >
-        {geoms.map((g) => {
-          const edge = g.edge
-          const style = g.color ? ({ ['--canvas-color' as string]: g.color } as React.CSSProperties) : undefined
-          return (
-            <g key={edge.id} className={`canvas-edge${selectedEdge === edge.id ? ' is-focused' : ''}${g.color ? ' is-themed' : ''}`} style={style} data-edge-id={edge.id}>
-              <path className="canvas-display-path" d={g.path} />
-              <path className="canvas-interaction-path" d={g.path} onPointerDown={(e) => props.onEdgePointerDown(e, edge)} />
-              {g.toArrow && <polygon className="canvas-path-end" points={arrowHead(g.to, g.toSide, zm)} />}
-              {g.fromArrow && <polygon className="canvas-path-end" points={arrowHead(g.from, g.fromSide, zm)} />}
-            </g>
-          )
-        })}
+        {geoms.map((g) => <Edge key={g.edge.id} geom={g} focused={selectedEdge === g.edge.id} zm={zm} onPointerDown={props.onEdgePointerDown} />)}
         {preview && (
           <path
             className="canvas-edge-preview"
@@ -180,6 +180,20 @@ export const EdgeLayer = (props: EdgeLayerProps): ReturnType<typeof React.create
         })}
       </div>
     </>
+  )
+}
+
+const EdgeView = (props: { geom: EdgeGeom; focused: boolean; zm: number; onPointerDown: EdgeLayerProps['onEdgePointerDown'] }): ReturnType<typeof React.createElement> => {
+  const { geom: g, zm } = props
+  const edge = g.edge
+  const style = g.color ? ({ ['--canvas-color' as string]: g.color } as React.CSSProperties) : undefined
+  return (
+    <g className={`canvas-edge${props.focused ? ' is-focused' : ''}${g.color ? ' is-themed' : ''}`} style={style} data-edge-id={edge.id}>
+      <path className="canvas-display-path" d={g.path} />
+      <path className="canvas-interaction-path" d={g.path} onPointerDown={(e) => props.onPointerDown(e, edge)} />
+      {g.toArrow && <polygon className="canvas-path-end" points={arrowHead(g.to, g.toSide, zm)} />}
+      {g.fromArrow && <polygon className="canvas-path-end" points={arrowHead(g.from, g.fromSide, zm)} />}
+    </g>
   )
 }
 
