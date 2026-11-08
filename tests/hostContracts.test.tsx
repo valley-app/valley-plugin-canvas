@@ -26,7 +26,7 @@ describe('package host contracts', () => {
   ])('registers New canvas in the target folder for %s', async (path, info, folder) => {
     const mock = createMockValleyApi({ manifest: declared })
     const dispose = plugin.register(mock.api)
-    const stat = vi.spyOn(mock.api.vault, 'fileInfo').mockResolvedValue(info)
+    const stat = vi.spyOn(mock.api.realm, 'fileInfo').mockResolvedValue(info)
     const execute = vi.spyOn(mock.api.commands, 'executeOwn')
     try {
       expect(declared.provides?.some((entry) => entry.id === FILE_TREE_CONTEXT_ITEM_V1.id)).toBe(true)
@@ -36,7 +36,7 @@ describe('package host contracts', () => {
       const target = `${folder ? `${folder}/` : ''}Untitled.canvas`
       expect(execute).toHaveBeenCalledWith('create-observe', { path: target })
       expect(execute).toHaveBeenCalledWith('create', { path: target, expectedRevision: expect.stringContaining('canvas:absent:'), open: true })
-      expect(await mock.api.vault.readFile(target)).toContain('nodes')
+      expect(await mock.api.realm.readFile(target)).toContain('nodes')
     } finally { stat.mockRestore(); execute.mockRestore(); await dispose() }
     expect(mock.api.interop.extensions.providers(FILE_TREE_CONTEXT_ITEM_V1)).toEqual([])
   })

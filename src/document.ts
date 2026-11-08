@@ -76,7 +76,7 @@ export class CanvasDocument {
   }
   persistence = async () => {
     this.owner.assertActive()
-    const file = await this.owner.api.vault.readFileBaseline(this.path)
+    const file = await this.owner.api.realm.readFileBaseline(this.path)
     this.owner.assertActive()
     return { draftRevision: `canvas-document-draft:${this.revision}`, diskRevision: file?.baseline ? `canvas:file:${file.baseline.hash}:${file.baseline.size}:${file.baseline.mtimeMs}` : 'canvas:missing', dirty: this.dirty, uncertain: this.uncertain, error: this.snapshot.error }
   }
@@ -139,7 +139,7 @@ export class CanvasDocument {
     }
     const editor = { view, snapshot, active: () => local().active, freeze }
     this.editors.set(view.mountId, editor)
-    const off = this.owner.api.vault.editors.register(view, {
+    const off = this.owner.api.realm.editors.register(view, {
       getSnapshot: snapshot,
       subscribe: listener => {
         const state = canvasState(this.owner)
@@ -189,7 +189,7 @@ export class CanvasDocument {
     return this.journalLoading = this.owner.run(async () => {
       const local = this.drafts.get(this.path)
       const expected = local?.journalRevision
-      const saved = await this.owner.api.vault.drafts.read(this.path, 'editor')
+      const saved = await this.owner.api.realm.drafts.read(this.path, 'editor')
       this.owner.assertActive()
       if (expected !== undefined && expected !== (saved?.revisionToken ?? null)) throw new Error('The canvas recovery journal changed elsewhere. Your local draft is preserved.')
       if (local) {
@@ -223,13 +223,13 @@ export class CanvasDocument {
         let completed = -1
         while (completed !== this.journalRequested) {
           const version = this.journalRequested
-          if (this.owner.api.getState().vault?.path !== this.owner.root) throw new Error('The canvas session is no longer active.')
+          if (this.owner.api.getState().realm?.path !== this.owner.root) throw new Error('The canvas session is no longer active.')
           if (this.dirty) {
             const draft: PluginFileDraft = { content: serializeCanvas(this.snapshot.data), baseline: this.baseline, state: JSON.stringify({ version: 1, lastWritten: this.written, error: this.snapshot.error }) }
-            const saved = await this.owner.api.vault.drafts.write(this.path, 'editor', draft, this.journalReceipt ?? null)
+            const saved = await this.owner.api.realm.drafts.write(this.path, 'editor', draft, this.journalReceipt ?? null)
             this.journalReceipt = saved.revisionToken
           } else {
-            if (this.journalReceipt) await this.owner.api.vault.drafts.clear(this.path, 'editor', this.journalReceipt)
+            if (this.journalReceipt) await this.owner.api.realm.drafts.clear(this.path, 'editor', this.journalReceipt)
             this.journalReceipt = null
           }
           this.retain()
@@ -252,7 +252,7 @@ export class CanvasDocument {
     this.owner.assertActive()
     this.leases++
     if (this.leases === 1) {
-      this.offChanged = this.owner.api.vault.onChanged((info) => {
+      this.offChanged = this.owner.api.realm.onChanged((info) => {
         if (!info.full && !info.changes.some((change) => change.relPath === this.path || this.path.startsWith(`${change.relPath}/`))) return
         this.fileRevision++
         if (!this.dirty) void this.load()
@@ -277,7 +277,7 @@ export class CanvasDocument {
         try {
           if (!this.journalLoaded) await this.loadJournal()
           if (!this.owner.isActive() || !this.leases || this.isFrozen()) return
-          const file = await this.owner.api.vault.readFileBaseline(this.path)
+          const file = await this.owner.api.realm.readFileBaseline(this.path)
           if (!this.owner.isActive() || !this.leases || this.isFrozen()) return
           if (requested !== this.fileRevision) continue
           if (revision !== this.revision || (this.snapshot.ready && written !== this.written)) return
@@ -343,8 +343,8 @@ export class CanvasDocument {
     try {
       if (view) {
         if (!editor || this.editors.get(view.mountId) !== editor || !draftRevision) throw new Error('The exact Canvas save owner is unavailable.')
-        result = await this.owner.api.vault.editors.save(view, text, this.baseline, draftRevision)
-      } else result = await this.owner.api.vault.writeFileGuarded(this.path, text, this.baseline)
+        result = await this.owner.api.realm.editors.save(view, text, this.baseline, draftRevision)
+      } else result = await this.owner.api.realm.writeFileGuarded(this.path, text, this.baseline)
     }
     catch (reason) {
       this.uncertain = Boolean((reason as { outcome?: string; outcomeUnknown?: boolean } | null)?.outcome === 'unknown' || (reason as { outcomeUnknown?: boolean } | null)?.outcomeUnknown)
@@ -358,7 +358,7 @@ export class CanvasDocument {
       this.retain()
       if (result.reason === 'conflict') throw Object.assign(new Error(this.snapshot.error), { code: 'REVISION_CONFLICT', outcome: 'not-applied' })
       const before = this.baseline
-      const unchanged = await this.owner.api.vault.readFileBaseline(this.path).then(file => before ? file?.baseline?.hash === before.hash && file.baseline.size === before.size && file.baseline.mtimeMs === before.mtimeMs : !file, () => false)
+      const unchanged = await this.owner.api.realm.readFileBaseline(this.path).then(file => before ? file?.baseline?.hash === before.hash && file.baseline.size === before.size && file.baseline.mtimeMs === before.mtimeMs : !file, () => false)
       if (unchanged) throw Object.assign(new Error(this.snapshot.error), { code: 'WRITE_FAILED', outcome: 'not-applied' })
       this.uncertain = true
       throw Object.assign(new Error(this.snapshot.error), { code: 'OUTCOME_UNKNOWN', outcome: 'unknown', outcomeUnknown: true })
@@ -426,7 +426,7 @@ export class CanvasDocument {
       await this.saving
       await this.journalPending
       if (!current()) return false
-      const file = await this.owner.run(() => this.owner.api.vault.readFileBaseline(this.path))
+      const file = await this.owner.run(() => this.owner.api.realm.readFileBaseline(this.path))
       if (!current()) return false
       if (!file) throw new Error(uiText('canvas.error.missing'))
       const parsed = parseCanvasDocument(file.content)
@@ -435,7 +435,7 @@ export class CanvasDocument {
       clearing = true
       this.publish({ busy: true })
       const receipt = this.journalReceipt
-      if (receipt) await this.owner.run(() => this.owner.api.vault.drafts.clear(this.path, 'editor', receipt))
+      if (receipt) await this.owner.run(() => this.owner.api.realm.drafts.clear(this.path, 'editor', receipt))
       if (!current()) return false
       this.journalReceipt = null
       this.baseline = file.baseline; this.written = file.content; this.dirty = false; this.revision++

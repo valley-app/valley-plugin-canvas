@@ -21,4 +21,4 @@ Select a card to colour, focus, edit or remove it from a small floating toolbar.
 
 ## Open format
 
-Boards are saved as JSON Canvas `.canvas` files in your vault, so they stay readable and portable.
+Boards are saved as JSON Canvas `.canvas` files in your realm, so they stay readable and portable.

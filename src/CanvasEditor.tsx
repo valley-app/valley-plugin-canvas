@@ -573,7 +573,7 @@ const CanvasEditor = ({ relPath, owner, mountedView }: { relPath: string; owner:
       const folder = relPath.includes('/') ? relPath.slice(0, relPath.lastIndexOf('/')) : ''
       for (let n = 0; n < 1000; n++) {
         const name = `${n === 0 ? 'Untitled' : `Untitled ${n}`}.md`, destination = folder ? `${folder}/${name}` : name
-        if ((await api.vault.readFileBaseline(destination))?.baseline) continue
+        if ((await api.realm.readFileBaseline(destination))?.baseline) continue
         const observed = await api.commands.executeOwn('convert-text-to-note-observe', { destination })
         if (!observed.ok) return
         await runNativeAction('convert-text-to-note', { destination, expectedDestinationRevision: (observed.value as { revision: string }).revision }).catch(() => {})
@@ -586,7 +586,7 @@ const CanvasEditor = ({ relPath, owner, mountedView }: { relPath: string; owner:
     for (let n = 0; n < 1000; n++) {
       const name = `${n === 0 ? 'Untitled' : `Untitled ${n}`}.md`
       const path = folder ? `${folder}/${name}` : name
-      const written = await owner.run(() => api.vault.writeFileGuarded(path, node.text, null))
+      const written = await owner.run(() => api.realm.writeFileGuarded(path, node.text, null))
       if (written.ok) {
         if (!isViewActive()) return
         const data = modelRef.current
@@ -598,7 +598,7 @@ const CanvasEditor = ({ relPath, owner, mountedView }: { relPath: string; owner:
   }
   /** View names a `.base` file declares, in order. */
   const baseViews = async (path: string): Promise<string[]> => {
-    const file = await owner.run(() => api.vault.readFileBaseline(path))
+    const file = await owner.run(() => api.realm.readFileBaseline(path))
     if (!file) return []
     const names: string[] = []
     let inViews = false
@@ -685,7 +685,7 @@ const CanvasEditor = ({ relPath, owner, mountedView }: { relPath: string; owner:
     }
   }
 
-  // ── Drag-drop vault files / URLs onto the canvas ─────────────────────────────
+  // ── Drag-drop realm files / URLs onto the canvas ─────────────────────────────
   const onDrop = (e: React.DragEvent): void => {
     e.preventDefault()
     if (readOnlyRef.current) return

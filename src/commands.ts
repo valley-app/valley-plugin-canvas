@@ -8,7 +8,7 @@ export { applyCanvasOperation, canvasNodeFields, canvasEdgeFields } from './oper
 import { canvasDataSchema } from './automationContracts'
 import { captureCanvasOwner, type CanvasOwner } from './runtime'
 
-/** Parent folder of the active file (or vault root when nothing is open). */
+/** Parent folder of the active file (or realm root when nothing is open). */
 function activeFolder(api: ValleyPluginApi): string {
   const active = api.getState().activePath
   if (!active) return ''
@@ -21,11 +21,11 @@ function missingRevisions(owner: CanvasOwner): Map<string, string> { let values 
 function refused(message: string, code: string): Error { return Object.assign(new Error(message), { code, outcome: 'not-applied' as const }) }
 const mutationOutput = objectSchema({ path: stringSchema, data: canvasDataSchema, revision: { type: 'string' } }, ['path', 'data', 'revision'])
 async function observeCreation(api: ValleyPluginApi, path: string, owner: CanvasOwner, assertActive: () => void) {
-  if (!path.endsWith('.canvas') || normalizeRelPathOpt(path) !== path) throw refused('Expected a vault-relative canvas path.', 'INVALID_INPUT')
-  const file = await owner.run(() => { assertActive(); return api.vault.readFileBaseline(path) })
+  if (!path.endsWith('.canvas') || normalizeRelPathOpt(path) !== path) throw refused('Expected a realm-relative canvas path.', 'INVALID_INPUT')
+  const file = await owner.run(() => { assertActive(); return api.realm.readFileBaseline(path) })
   assertActive()
   if (!file || file.baseline || canvasSession(path, owner) || canvasDraft(path, owner)) throw refused('The canvas path is occupied or has a retained draft.', 'PATH_OCCUPIED')
-  const draft = await owner.run(() => api.vault.drafts.read(path, 'editor'))
+  const draft = await owner.run(() => api.realm.drafts.read(path, 'editor'))
   assertActive()
   if (draft) throw refused('The canvas has an unsaved draft.', 'UNSAVED_DRAFT')
   const entries = missingRevisions(owner)
@@ -42,7 +42,7 @@ async function freeCanvasPath(api: ValleyPluginApi, folder: string, owner: Canva
   for (let n = 0; n < 1000; n++) {
     owner.assertActive()
     const path = `${folder ? `${folder}/` : ''}Untitled${n ? ` ${n}` : ''}.canvas`
-    const file = await owner.run(() => api.vault.stat(path))
+    const file = await owner.run(() => api.realm.stat(path))
     owner.assertActive()
     if (!file) return path
   }
@@ -62,12 +62,12 @@ export function registerCanvasCommands(api: ValleyPluginApi, owner = captureCanv
   let registered = true
   const assertActive = (): void => { owner.assertActive(); if (!registered) throw new Error('The canvas commands are no longer registered.') }
   const guard = async (context: CommandContext): Promise<void> => { assertActive(); if (context.cancellation?.aborted) throw Object.assign(new Error('The canvas operation was cancelled.'), { outcome: 'not-applied', code: 'CANCELLED' }); if (context.validateBeforeRun && !await context.validateBeforeRun()) throw Object.assign(new Error('Canvas authorization is no longer current.'), { outcome: 'not-applied', code: 'AUTHORIZATION_CHANGED' }); assertActive(); if (context.cancellation?.aborted) throw Object.assign(new Error('The canvas operation was cancelled.'), { outcome: 'not-applied', code: 'CANCELLED' }) }
-  const guardedVault = {
-    ...api.vault,
-    restoreTrashed: (...args: Parameters<typeof api.vault.restoreTrashed>) => owner.run(() => { assertActive(); return api.vault.restoreTrashed(...args) }),
-    readFileBaseline: (path: string) => owner.run(() => { assertActive(); return api.vault.readFileBaseline(path) }),
-    trashFileGuarded: (...args: Parameters<typeof api.vault.trashFileGuarded>) => owner.run(() => { assertActive(); return api.vault.trashFileGuarded(...args) }),
-    writeFileGuarded: (...args: Parameters<typeof api.vault.writeFileGuarded>) => owner.run(() => { assertActive(); return api.vault.writeFileGuarded(...args) })
+  const guardedRealm = {
+    ...api.realm,
+    restoreTrashed: (...args: Parameters<typeof api.realm.restoreTrashed>) => owner.run(() => { assertActive(); return api.realm.restoreTrashed(...args) }),
+    readFileBaseline: (path: string) => owner.run(() => { assertActive(); return api.realm.readFileBaseline(path) }),
+    trashFileGuarded: (...args: Parameters<typeof api.realm.trashFileGuarded>) => owner.run(() => { assertActive(); return api.realm.trashFileGuarded(...args) }),
+    writeFileGuarded: (...args: Parameters<typeof api.realm.writeFileGuarded>) => owner.run(() => { assertActive(); return api.realm.writeFileGuarded(...args) })
   }
   // create-new runs this in its own command context: a nested executeOwn('create') would queue a second write behind the running one until the renderer timeout.
   const createCanvas = async ({ path, expectedRevision, open }: { path: string; expectedRevision: string; open: boolean }, context: CommandContext) => {
@@ -76,16 +76,16 @@ export function registerCanvasCommands(api: ValleyPluginApi, owner = captureCanv
     const observed = await observeCreation(api, path, owner, assertActive)
     if (observed.expectedRevision !== expectedRevision) throw refused('The canvas path changed.', 'REVISION_CONFLICT')
     await guard(context)
-    const written = await owner.run(() => { assertActive(); return api.vault.writeFileGuarded(path, EMPTY_CANVAS, null) })
+    const written = await owner.run(() => { assertActive(); return api.realm.writeFileGuarded(path, EMPTY_CANVAS, null) })
     if (!written.ok) throw Object.assign(new Error('The canvas could not be created.'), { outcome: written.reason === 'conflict' ? 'not-applied' : 'unknown', code: written.reason === 'conflict' ? 'REVISION_CONFLICT' : 'OUTCOME_UNKNOWN' })
     missingRevisions(owner).delete(path)
     try {
-      const confirmed = await owner.run(() => api.vault.readFileBaseline(path))
+      const confirmed = await owner.run(() => api.realm.readFileBaseline(path))
       assertActive()
       if (confirmed?.content !== EMPTY_CANVAS || confirmed.baseline?.hash !== written.baseline.hash || confirmed.baseline.size !== written.baseline.size) throw new Error('The created canvas could not be verified.')
       if (open) { await guard(context); await owner.run(() => { assertActive(); return api.workspace.openFile(path) }) }
     } catch (error) { throw Object.assign(error instanceof Error ? error : new Error(String(error)), { outcome: 'unknown', code: 'OUTCOME_UNKNOWN' }) }
-    return { value: { relPath: path, revision: `canvas:file:${written.baseline.hash}:${written.baseline.size}:${written.baseline.mtimeMs}`, verified: true }, revert: guardedCreatedFileRevert(guardedVault, path, EMPTY_CANVAS, written.baseline, 'Create canvas') }
+    return { value: { relPath: path, revision: `canvas:file:${written.baseline.hash}:${written.baseline.size}:${written.baseline.mtimeMs}`, verified: true }, revert: guardedCreatedFileRevert(guardedRealm, path, EMPTY_CANVAS, written.baseline, 'Create canvas') }
   }
   const offNew = api.commands.register({ id: 'create-new', label: 'Canvas: Create new canvas', labelKey: 'auto.7b18787efddd', sideEffect: 'write', agentVisibility: 'forbidden', recovery: 'non-replayable', idempotent: false, outputSchema: { type: 'null' }, revision: () => ({ folder: activeFolder(api) }), preview: () => ({ action: 'create-canvas', folder: activeFolder(api), open: true }), run: async (_input, context) => { await guard(context); const path = await freeCanvasPath(api, activeFolder(api), owner); const { expectedRevision } = await observeCreation(api, path, owner, assertActive); return { value: null, revert: (await createCanvas({ path, expectedRevision, open: true }, context)).revert } } })
   const offObserve = api.commands.register({ id: 'create-observe', label: 'Canvas: Observe an unused path', paletteSafe: false, sideEffect: 'read', recovery: 'observational', idempotent: true, input: { schema: objectSchema({ path: stringSchema }, ['path']), parse: raw => ({ path: requiredString(record(raw).path) }) }, outputSchema: objectSchema({ path: stringSchema, expectedRevision: stringSchema }, ['path', 'expectedRevision']), run: ({ path }) => observeCreation(api, path, owner, assertActive) })
@@ -104,14 +104,14 @@ export function registerCanvasCommands(api: ValleyPluginApi, owner = captureCanv
 
 export async function readCanvasTarget(api: ValleyPluginApi, path: string, owner = captureCanvasOwner(api), assertActive = owner.assertActive, exactSession?: () => CanvasSession) {
   assertActive()
-  if (!path.endsWith('.canvas') || normalizeRelPathOpt(path) !== path) throw refused('Expected a vault-relative canvas path.', 'INVALID_INPUT')
+  if (!path.endsWith('.canvas') || normalizeRelPathOpt(path) !== path) throw refused('Expected a realm-relative canvas path.', 'INVALID_INPUT')
   const session = exactSession ? exactSession() : canvasSession(path, owner)
   if (session) { const snapshot = session.get(); if (!snapshot.ready) throw refused('The canvas is still loading.', 'NOT_READY'); if (snapshot.invalid) throw refused('The canvas file is invalid.', 'INVALID_DOCUMENT'); return { data: snapshot.data, revision: snapshot.revision, baseline: null, session, exactSession } }
   if (canvasDraft(path, owner)) throw refused('The canvas has an unsaved draft. Reopen it and resolve the save error before editing.', 'UNSAVED_DRAFT')
-  const recovery = await owner.run(() => { assertActive(); return api.vault.drafts.read(path, 'editor') })
+  const recovery = await owner.run(() => { assertActive(); return api.realm.drafts.read(path, 'editor') })
   assertActive()
   if (recovery) throw refused('The canvas has an unsaved draft. Reopen it and resolve the save error before editing.', 'UNSAVED_DRAFT')
-  const file = await owner.run(() => { assertActive(); return api.vault.readFileBaseline(path) })
+  const file = await owner.run(() => { assertActive(); return api.realm.readFileBaseline(path) })
   assertActive()
   if (canvasSession(path, owner) || canvasDraft(path, owner)) throw refused('The canvas changed. Inspect its active draft before editing.', 'REVISION_CONFLICT')
   if (!file) throw refused('The canvas file no longer exists.', 'NOT_FOUND')
@@ -137,11 +137,11 @@ async function commitTarget(owner: CanvasOwner, path: string, data: CanvasData, 
       assertActive()
       if (canvasSession(path, owner) || canvasDraft(path, owner)) throw new Error('The canvas changed. Inspect its active draft before editing.')
       assertDispatch()
-      return owner.api.vault.writeFileGuarded(path, serializeCanvas(data), previous.baseline)
+      return owner.api.realm.writeFileGuarded(path, serializeCanvas(data), previous.baseline)
     })
     if (!result.ok) throw Object.assign(new Error('The canvas changed or could not be saved.'), { outcome: result.reason === 'conflict' ? 'not-applied' : 'unknown', code: result.reason === 'conflict' ? 'REVISION_CONFLICT' : 'OUTCOME_UNKNOWN' })
     try {
-      const confirmed = await owner.api.vault.readFileBaseline(path)
+      const confirmed = await owner.api.realm.readFileBaseline(path)
       assertActive()
       if (confirmed?.content !== serializeCanvas(data) || confirmed.baseline?.hash !== result.baseline.hash) throw new Error('The resulting canvas could not be verified.')
     } catch (error) { throw Object.assign(error instanceof Error ? error : new Error(String(error)), { outcome: 'unknown', code: 'OUTCOME_UNKNOWN' }) }

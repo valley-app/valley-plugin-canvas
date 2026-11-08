@@ -7,7 +7,7 @@ import { applyCanvasOperation, record, requiredString } from '../operations'
 export const MAX_CANVAS_BYTES = 512 * 1024
 function fail(message: string, code = 'INVALID_INPUT', unknown = false): never { throw Object.assign(new Error(message), { code, outcome: unknown ? 'unknown' : 'not-applied', outcomeUnknown: unknown }) }
 const revisionOf = (baseline: FileBaseline): string => `canvas:file:${baseline.hash}:${baseline.size}:${baseline.mtimeMs}`
-function canvasPath(raw: unknown): string { const path = requiredString(raw); if (path.length > 4096 || !path.endsWith('.canvas') || normalizeRelPathOpt(path) !== path) fail('Expected a vault-relative canvas path.'); return path }
+function canvasPath(raw: unknown): string { const path = requiredString(raw); if (path.length > 4096 || !path.endsWith('.canvas') || normalizeRelPathOpt(path) !== path) fail('Expected a realm-relative canvas path.'); return path }
 const budget = (content: string): void => { if (new TextEncoder().encode(content).byteLength > MAX_CANVAS_BYTES) fail('Canvas automation is limited to 512 KiB per document.', 'RESOURCE_LIMIT') }
 const compare = (expected: unknown, current: string): void => { if (typeof expected !== 'string' || expected !== current) fail('The canvas changed. Inspect it again before editing.', 'REVISION_CONFLICT') }
 
@@ -21,7 +21,7 @@ export function registerCanvasDocumentCommands(api: PluginBackendApi): () => voi
   }
   const load = async (path: string, context: PluginBackendOperationContext) => {
     assert(context)
-    const file = await context.api.vault.read(path)
+    const file = await context.api.realm.read(path)
     assert(context)
     if (!file) fail('The canvas could not be read.', 'UNAVAILABLE')
     if (!file.baseline) {
@@ -75,7 +75,7 @@ export function registerCanvasDocumentCommands(api: PluginBackendApi): () => voi
     budget(text)
     assert(context)
     let written
-    try { written = await context.api.vault.write(path, text, before.baseline) }
+    try { written = await context.api.realm.write(path, text, before.baseline) }
     catch (error) {
       if (error && typeof error === 'object' && 'outcome' in error && error.outcome === 'not-applied') throw error
       fail('The canvas write acknowledgement was lost. Inspect the original execution; do not replay it.', 'OUTCOME_UNKNOWN', true)
@@ -84,7 +84,7 @@ export function registerCanvasDocumentCommands(api: PluginBackendApi): () => voi
     missing.delete(path)
     try {
       assert(context)
-      const observed = await context.api.vault.read(path)
+      const observed = await context.api.realm.read(path)
       assert(context)
       if (!observed?.baseline || observed.content !== text || revisionOf(observed.baseline) !== revisionOf(written.baseline)) fail('The resulting canvas could not be verified.', 'OUTCOME_UNKNOWN', true)
       return { value: { path, revision: revisionOf(observed.baseline), verified: true } }

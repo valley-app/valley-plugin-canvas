@@ -17,13 +17,13 @@ export const CanvasMinimap = ({ owner, relPath }: { owner: CanvasOwner; relPath:
   const [epoch, setEpoch] = React.useState(0)
   React.useEffect(() => {
     if (!owner.isActive()) return
-    const off = api.vault.onChanged((event) => { if (event.full || event.changes.some((change) => change.relPath === relPath)) setEpoch((n) => n + 1) })
+    const off = api.realm.onChanged((event) => { if (event.full || event.changes.some((change) => change.relPath === relPath)) setEpoch((n) => n + 1) })
     const offOwner = owner.onDispose(off)
     return () => { offOwner(); off() }
   }, [api, owner, relPath])
   React.useEffect(() => {
     let active = true
-    void owner.run(() => api.vault.readFileBaseline(relPath)).then((file) => {
+    void owner.run(() => api.realm.readFileBaseline(relPath)).then((file) => {
       if (!active || !owner.isActive()) return
       if (!file) { setMissing(true); return }
       setMissing(false)

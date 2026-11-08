@@ -4,7 +4,7 @@
  * `fileViews` map (`{ '.canvas': 'canvas.editor' }`); the host mounts the view
  * as a full workspace tab whenever a `.canvas` file is opened, and as its
  * minimap wherever the file is embedded. The editor reads/writes the file
- * through `api.vault` and owns its own debounced persistence + ⌘Z integration.
+ * through `api.realm` and owns its own debounced persistence + ⌘Z integration.
  *
  * Text, note, media, web page and group cards; connections (edges with
  * arrowheads + colours); pan/zoom/select/marquee/drag/resize/recolour/align.
@@ -45,7 +45,7 @@ export function register(api: ValleyPluginApi): () => Promise<void> {
     icon: 'shapes',
     directories: true,
     run: async (path) => {
-      const file = path ? await owner.run(() => api.vault.fileInfo(path)) : null
+      const file = path ? await owner.run(() => api.realm.fileInfo(path)) : null
       owner.assertActive()
       const folder = file ? path.slice(0, Math.max(0, path.lastIndexOf('/'))) : path
       await createCanvasFromUi(api, folder, owner)

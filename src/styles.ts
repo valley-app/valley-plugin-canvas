@@ -491,7 +491,7 @@ textarea.canvas-path-label { resize: none; outline: none; min-width: calc(4em * 
 .canvas-minimap path.is-themed { stroke: var(--canvas-color); }
 .canvas-minimap-message { padding: 16px; font-size: var(--small-font-size); text-align: center; }
 
-/* ── Help and the vault file picker (inside host modals) ───────────────────── */
+/* ── Help and the realm file picker (inside host modals) ───────────────────── */
 .canvas-help { display: flex; flex-direction: column; gap: 10px; font-size: var(--small-font-size); }
 .canvas-instruction { display: flex; justify-content: space-between; gap: 16px; align-items: center; }
 .canvas-instruction-desc { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }

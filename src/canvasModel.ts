@@ -8,7 +8,7 @@
  * diff. `tests/fixtures/sample.canvas` adapts its sample with a neutral project
  * link and is round-tripped by the test suite.
  *
- * Tolerance mirrors the vault's JSONL invariant: a malformed `.canvas` never
+ * Tolerance mirrors the realm's JSONL invariant: a malformed `.canvas` never
  * throws. Unparseable JSON is reported as invalid so the editor stays
  * read-only instead of overwriting it, and every node, edge or top-level key
  * the editor cannot use is kept verbatim so a save never drops another tool's data.
@@ -48,7 +48,7 @@ export const GROUP_BACKGROUND_STYLES: readonly GroupBackgroundStyle[] = ['cover'
 export interface GroupNode extends CanvasNodeBase {
   type: 'group'
   label?: string
-  /** Vault path to the background image. */
+  /** Realm path to the background image. */
   background?: string
   backgroundStyle?: GroupBackgroundStyle
 }

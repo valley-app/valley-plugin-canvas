@@ -85,7 +85,7 @@ describe('CanvasEditor', () => {
     fireEvent.change(input, { target: { value: 'Edited by double-click' } })
     fireEvent.keyDown(input, { key: 'Escape' })
     await act(async () => { await mock.runBeforeUnload() })
-    expect(parseCanvas(await mock.api.vault.readFile('Test.canvas')).nodes[0]).toMatchObject({ id: 'a', text: 'Edited by double-click', x: 0, y: 0 })
+    expect(parseCanvas(await mock.api.realm.readFile('Test.canvas')).nodes[0]).toMatchObject({ id: 'a', text: 'Edited by double-click', x: 0, y: 0 })
   })
 
   // jsdom reports no platform, so cloning uses the non-macOS key (Ctrl).
@@ -103,8 +103,8 @@ describe('CanvasEditor', () => {
     expect(canvasSession('Test.canvas')!.get().data).toEqual(oneCard)
     expect(container.querySelector('.canvas-node.is-dragging')).toBeNull()
     await act(async () => { await mock.runBeforeUnload() })
-    expect(mock.api.vault.writeFileGuarded).not.toHaveBeenCalled()
-    expect(parseCanvas(await mock.api.vault.readFile('Test.canvas'))).toEqual(oneCard)
+    expect(mock.api.realm.writeFileGuarded).not.toHaveBeenCalled()
+    expect(parseCanvas(await mock.api.realm.readFile('Test.canvas'))).toEqual(oneCard)
   })
 
   it.each([false, true])('captures and saves a real card drag after the movement threshold (duplicate=%s)', async (ctrlKey) => {
@@ -126,7 +126,7 @@ describe('CanvasEditor', () => {
     expect(container.querySelector(`[data-node-id="${selected[0]}"]`)).toHaveClass('is-dragging')
     fireEvent.pointerUp(root, { pointerId: 8, clientX: 80, clientY: 50 })
     await act(async () => { await mock.runBeforeUnload() })
-    const saved = parseCanvas(await mock.api.vault.readFile('Test.canvas'))
+    const saved = parseCanvas(await mock.api.realm.readFile('Test.canvas'))
     expect(saved.nodes).toHaveLength(ctrlKey ? 2 : 1)
     expect(saved.nodes.find(node => node.id === selected[0])).toMatchObject({ x: 70, y: 40 })
     if (ctrlKey) expect(saved.nodes.find(node => node.id === 'a')).toEqual(oneCard.nodes[0])
@@ -135,53 +135,53 @@ describe('CanvasEditor', () => {
 
   it('rereads a file changed while its initial canvas load is pending', async () => {
     mock = withHostUi(createMockValleyApi({ manifest: { id: 'canvas' }, files: { 'Test.canvas': serializeCanvas(oneCard) } }))
-    const original = await mock.api.vault.readFileBaseline('Test.canvas')
+    const original = await mock.api.realm.readFileBaseline('Test.canvas')
     let complete!: (file: typeof original) => void
-    const read = vi.spyOn(mock.api.vault, 'readFileBaseline')
+    const read = vi.spyOn(mock.api.realm, 'readFileBaseline')
     read.mockImplementationOnce(() => new Promise((resolve) => { complete = resolve }))
     const newest = { ...oneCard, nodes: [{ ...oneCard.nodes[0], text: 'Newest initial canvas' }] }
     read.mockResolvedValueOnce({ ...original!, content: serializeCanvas(newest) })
     initRuntime(mock.api)
     render(<CanvasEditor relPath="Test.canvas" tab={TAB} />)
     await waitFor(() => expect(read).toHaveBeenCalledTimes(1))
-    act(() => mock.emitVaultChanged({ changes: [{ relPath: 'Test.canvas', kind: 'change' }] }))
+    act(() => mock.emitRealmChanged({ changes: [{ relPath: 'Test.canvas', kind: 'change' }] }))
     await act(async () => { complete(original) })
     await screen.findByText('Newest initial canvas')
     expect(read).toHaveBeenCalledTimes(2)
     expect(canvasSession('Test.canvas')?.get().data).toEqual(newest)
-    expect(mock.api.vault.writeFileGuarded).not.toHaveBeenCalled()
+    expect(mock.api.realm.writeFileGuarded).not.toHaveBeenCalled()
   })
 
   it('scopes reloads to its file and merges an external change burst without publishing the stale canvas', async () => {
     mountWith({ 'Test.canvas': serializeCanvas(oneCard) })
     await screen.findByText('Hello canvas')
-    const original = await mock.api.vault.readFileBaseline('Test.canvas')
-    const read = vi.spyOn(mock.api.vault, 'readFileBaseline')
-    act(() => mock.emitVaultChanged({ changes: [{ relPath: 'Other.canvas', kind: 'change' }] }))
+    const original = await mock.api.realm.readFileBaseline('Test.canvas')
+    const read = vi.spyOn(mock.api.realm, 'readFileBaseline')
+    act(() => mock.emitRealmChanged({ changes: [{ relPath: 'Other.canvas', kind: 'change' }] }))
     expect(read).not.toHaveBeenCalled()
     let complete!: (file: typeof original) => void
     read.mockImplementationOnce(() => new Promise((resolve) => { complete = resolve }))
     const newest = { ...oneCard, nodes: [{ ...oneCard.nodes[0], text: 'Newest canvas' }] }
     read.mockResolvedValueOnce({ ...original!, content: serializeCanvas(newest) })
     act(() => {
-      for (let index = 0; index < 20; index++) mock.emitVaultChanged({ changes: [{ relPath: 'Test.canvas', kind: 'change' }] })
+      for (let index = 0; index < 20; index++) mock.emitRealmChanged({ changes: [{ relPath: 'Test.canvas', kind: 'change' }] })
     })
     expect(read).toHaveBeenCalledTimes(1)
     await act(async () => { complete({ ...original!, content: serializeCanvas({ ...oneCard, nodes: [] }) }) })
     await screen.findByText('Newest canvas')
     expect(read).toHaveBeenCalledTimes(2)
     expect(canvasSession('Test.canvas')?.get().data).toEqual(newest)
-    expect(mock.api.vault.writeFileGuarded).not.toHaveBeenCalled()
+    expect(mock.api.realm.writeFileGuarded).not.toHaveBeenCalled()
   })
 
   it('discards a pending external reload when its editor is unmounted', async () => {
     const mounted = mountWith({ 'Test.canvas': serializeCanvas(oneCard) })
     await screen.findByText('Hello canvas')
-    const original = await mock.api.vault.readFileBaseline('Test.canvas')
+    const original = await mock.api.realm.readFileBaseline('Test.canvas')
     let complete!: (file: typeof original) => void
-    const read = vi.spyOn(mock.api.vault, 'readFileBaseline')
+    const read = vi.spyOn(mock.api.realm, 'readFileBaseline')
     read.mockImplementationOnce(() => new Promise((resolve) => { complete = resolve }))
-    act(() => mock.emitVaultChanged({ full: true }))
+    act(() => mock.emitRealmChanged({ full: true }))
     mounted.unmount()
     const runtime = vi.spyOn(mock.api.runtime, 'getOrCreate').mockImplementation(() => { throw new Error('Session revoked') })
     try {
@@ -194,10 +194,10 @@ describe('CanvasEditor', () => {
   it('keeps a card edited during a pending external reload and its original guarded baseline', async () => {
     mountWith({ 'Test.canvas': serializeCanvas(oneCard) })
     const body = await screen.findByText('Hello canvas')
-    const original = await mock.api.vault.readFileBaseline('Test.canvas')
+    const original = await mock.api.realm.readFileBaseline('Test.canvas')
     let complete!: (file: typeof original) => void
-    vi.spyOn(mock.api.vault, 'readFileBaseline').mockImplementationOnce(() => new Promise((resolve) => { complete = resolve }))
-    act(() => mock.emitVaultChanged({ full: true }))
+    vi.spyOn(mock.api.realm, 'readFileBaseline').mockImplementationOnce(() => new Promise((resolve) => { complete = resolve }))
+    act(() => mock.emitRealmChanged({ full: true }))
     fireEvent.doubleClick(body)
     const textarea = await screen.findByDisplayValue('Hello canvas')
     fireEvent.change(textarea, { target: { value: 'Retained edit' } })
@@ -206,7 +206,7 @@ describe('CanvasEditor', () => {
     expect(canvasSession('Test.canvas')?.get().data.nodes[0]).toMatchObject({ text: 'Retained edit' })
     expect(canvasDraft('Test.canvas')?.baseline).toEqual(original?.baseline)
     await act(async () => { await mock.runBeforeUnload() })
-    expect(mock.api.vault.writeFileGuarded).toHaveBeenCalledWith('Test.canvas', expect.stringContaining('Retained edit'), original?.baseline)
+    expect(mock.api.realm.writeFileGuarded).toHaveBeenCalledWith('Test.canvas', expect.stringContaining('Retained edit'), original?.baseline)
   })
 
   it('offers eight border resize targets before selection and cancels a gesture without writing', async () => {
@@ -218,7 +218,7 @@ describe('CanvasEditor', () => {
     fireEvent.pointerDown(handles[0], { button: 0, pointerId: 1, clientX: 20, clientY: 20 })
     fireEvent.pointerMove(root, { pointerId: 1, clientX: 60, clientY: 60 })
     fireEvent.pointerCancel(root, { pointerId: 1 })
-    expect(mock.api.vault.writeFileGuarded).not.toHaveBeenCalled()
+    expect(mock.api.realm.writeFileGuarded).not.toHaveBeenCalled()
     expect(canvasSession('Test.canvas')?.get().data).toEqual(oneCard)
   })
 
@@ -233,7 +233,7 @@ describe('CanvasEditor', () => {
     fireEvent.pointerMove(root, { pointerId: 2, clientX: 80, clientY: 50 })
     fireEvent.pointerUp(root, { pointerId: 2, clientX: 80, clientY: 50 })
     expect(canvasSession('Test.canvas')?.get().data).toEqual(oneCard)
-    expect(mock.api.vault.writeFileGuarded).not.toHaveBeenCalled()
+    expect(mock.api.realm.writeFileGuarded).not.toHaveBeenCalled()
     fireEvent.blur(window)
     expect(root.classList.contains('canvas-pan-ready')).toBe(false)
   })
@@ -428,22 +428,22 @@ describe('CanvasEditor', () => {
       expect(await screen.findByText(next)).toBeTruthy()
     }
     await editText('Hello canvas', 'Pending scene')
-    const write = vi.mocked(mock.api.vault.writeFileGuarded).getMockImplementation()!
+    const write = vi.mocked(mock.api.realm.writeFileGuarded).getMockImplementation()!
     let finish!: () => void
     const blocked = new Promise<void>((resolve) => { finish = resolve })
-    vi.mocked(mock.api.vault.writeFileGuarded).mockImplementationOnce(async (...args) => { await blocked; return write(...args) })
+    vi.mocked(mock.api.realm.writeFileGuarded).mockImplementationOnce(async (...args) => { await blocked; return write(...args) })
     let completed = false
     const unload = mock.runBeforeUnload().then(() => { completed = true })
-    await waitFor(() => expect(mock.api.vault.writeFileGuarded).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(mock.api.realm.writeFileGuarded).toHaveBeenCalledTimes(1))
     expect(completed).toBe(false)
     await editText('Pending scene', 'Newest scene')
     await act(async () => { finish(); await unload })
-    expect(parseCanvas(await mock.api.vault.readFile('Test.canvas')).nodes[0]).toMatchObject({ text: 'Newest scene' })
+    expect(parseCanvas(await mock.api.realm.readFile('Test.canvas')).nodes[0]).toMatchObject({ text: 'Newest scene' })
     expect(canvasDraft('Test.canvas')).toBeUndefined()
-    expect(mock.api.vault.writeFileGuarded).toHaveBeenCalledTimes(2)
+    expect(mock.api.realm.writeFileGuarded).toHaveBeenCalledTimes(2)
     const runtime = vi.spyOn(mock.api.runtime, 'getOrCreate').mockImplementation(() => { throw new Error('Plugin session is no longer active') })
     try { mounted.unmount(); expect(runtime).not.toHaveBeenCalled() } finally { runtime.mockRestore() }
-    expect(mock.api.vault.writeFileGuarded).toHaveBeenCalledTimes(2)
+    expect(mock.api.realm.writeFileGuarded).toHaveBeenCalledTimes(2)
   })
 
   it('rejects unload on a save conflict and keeps the editable draft without an implicit retry', async () => {
@@ -452,13 +452,13 @@ describe('CanvasEditor', () => {
     const textarea = await screen.findByDisplayValue('Hello canvas')
     fireEvent.change(textarea, { target: { value: 'Retained scene' } })
     fireEvent.keyDown(textarea, { key: 'Escape' })
-    vi.mocked(mock.api.vault.writeFileGuarded).mockResolvedValueOnce({ ok: false, reason: 'conflict', current: null })
+    vi.mocked(mock.api.realm.writeFileGuarded).mockResolvedValueOnce({ ok: false, reason: 'conflict', current: null })
     await act(async () => { await expect(mock.runBeforeUnload()).rejects.toThrow('changed on disk') })
     expect(canvasDraft('Test.canvas')?.data.nodes[0]).toMatchObject({ text: 'Retained scene' })
     expect(screen.getByText('Retained scene')).toBeTruthy()
-    expect(parseCanvas(await mock.api.vault.readFile('Test.canvas'))).toEqual(oneCard)
+    expect(parseCanvas(await mock.api.realm.readFile('Test.canvas'))).toEqual(oneCard)
     await expect(mock.runBeforeUnload()).rejects.toThrow('changed on disk')
-    expect(mock.api.vault.writeFileGuarded).toHaveBeenCalledTimes(1)
+    expect(mock.api.realm.writeFileGuarded).toHaveBeenCalledTimes(1)
     fireEvent.click(screen.getByText('Retry save'))
     await waitFor(() => expect(canvasDraft('Test.canvas')).toBeUndefined())
     await expect(mock.runBeforeUnload()).resolves.toBeUndefined()
@@ -496,7 +496,7 @@ describe('CanvasEditor', () => {
 
     // The debounced save writes parseable JSONCanvas with the new text.
     await waitFor(async () => {
-      const text = await mock.api.vault.readFile('Test.canvas')
+      const text = await mock.api.realm.readFile('Test.canvas')
       const data = parseCanvas(text)
       expect(data.nodes).toHaveLength(1)
       expect((data.nodes[0] as { text: string }).text).toBe('Updated text')
@@ -508,7 +508,7 @@ describe('CanvasEditor', () => {
     await screen.findByText('Hello canvas')
     await act(async () => { await editCanvasTarget(mock.api, 'Test.canvas', { type: 'update-node', id: 'a', values: { text: 'Agent edit' } }, canvasSession('Test.canvas')!.get().revision) })
     expect(await screen.findByText('Agent edit')).toBeTruthy()
-    expect(parseCanvas(await mock.api.vault.readFile('Test.canvas')).nodes[0]).toMatchObject({ text: 'Agent edit' })
+    expect(parseCanvas(await mock.api.realm.readFile('Test.canvas')).nodes[0]).toMatchObject({ text: 'Agent edit' })
     const menu = vi.spyOn(mock.api.ui, 'openMenu')
     fireEvent.contextMenu(document.querySelector('.canvas-root')!)
     const items = menu.mock.calls.at(-1)?.[0] ?? []
@@ -520,13 +520,13 @@ describe('CanvasEditor', () => {
   it('keeps the live scene and external file intact when an API save conflicts', async () => {
     mountWith({ 'Test.canvas': serializeCanvas(oneCard) })
     await screen.findByText('Hello canvas')
-    vi.mocked(mock.api.vault.writeFileGuarded).mockResolvedValueOnce({ ok: false, reason: 'conflict', current: null })
+    vi.mocked(mock.api.realm.writeFileGuarded).mockResolvedValueOnce({ ok: false, reason: 'conflict', current: null })
     await act(async () => { await expect(editCanvasTarget(mock.api, 'Test.canvas', { type: 'delete-nodes', ids: ['a'] }, canvasSession('Test.canvas')!.get().revision)).rejects.toThrow('changed on disk') })
     expect(canvasSession('Test.canvas')?.get().data).toEqual(oneCard)
     expect(canvasDraft('Test.canvas')?.data).toEqual(oneCard)
-    expect(parseCanvas(await mock.api.vault.readFile('Test.canvas'))).toEqual(oneCard)
+    expect(parseCanvas(await mock.api.realm.readFile('Test.canvas'))).toEqual(oneCard)
     expect(screen.getByRole('alert').textContent).toContain('draft is preserved')
-    expect(mock.api.vault.writeFileGuarded).toHaveBeenCalledTimes(1)
+    expect(mock.api.realm.writeFileGuarded).toHaveBeenCalledTimes(1)
   })
 
   it('adds a card from the create menu and edits it straight away', async () => {
@@ -553,8 +553,8 @@ describe('CanvasEditor', () => {
     fireEvent.doubleClick(container.querySelector('.canvas-root')!, { clientX: 300, clientY: 200 })
     await expect(editCanvasTarget(mock.api, 'Test.canvas', { type: 'delete-nodes', ids: ['a'] }, canvasSession('Test.canvas')!.get().revision)).rejects.toThrow()
     await act(async () => { await mock.runBeforeUnload() })
-    expect(mock.api.vault.writeFileGuarded).not.toHaveBeenCalled()
-    expect(await mock.api.vault.readFile('Test.canvas')).toBe('{ "nodes": [ broken')
+    expect(mock.api.realm.writeFileGuarded).not.toHaveBeenCalled()
+    expect(await mock.api.realm.readFile('Test.canvas')).toBe('{ "nodes": [ broken')
   })
 })
 
@@ -645,7 +645,7 @@ describe('CanvasEditor chrome', () => {
     await act(async () => bringToFront!.onSelect!())
 
     await waitFor(async () => {
-      const data = parseCanvas(await mock.api.vault.readFile('Test.canvas'))
+      const data = parseCanvas(await mock.api.realm.readFile('Test.canvas'))
       expect(data.nodes.map((n) => n.id)).toEqual(['over', 'under'])
     })
   })
@@ -669,16 +669,16 @@ describe('CanvasEditor chrome', () => {
 
     fireEvent.click(preset)
     await waitFor(async () => {
-      const data = parseCanvas(await mock.api.vault.readFile('Test.canvas'))
+      const data = parseCanvas(await mock.api.realm.readFile('Test.canvas'))
       expect(data.nodes[0].color).toBe('1')
     })
     fireEvent.click(screen.getByLabelText('Set color'))
     const custom = container.querySelector('.canvas-color-picker-custom input') as HTMLInputElement
     fireEvent.input(custom, { target: { value: '#2468ac' } })
-    await waitFor(async () => expect(parseCanvas(await mock.api.vault.readFile('Test.canvas')).nodes[0].color).toBe('#2468ac'))
+    await waitFor(async () => expect(parseCanvas(await mock.api.realm.readFile('Test.canvas')).nodes[0].color).toBe('#2468ac'))
     fireEvent.click(screen.getByLabelText('Set color'))
     fireEvent.click(container.querySelector('.canvas-color-picker-item.is-none')!)
-    await waitFor(async () => expect(parseCanvas(await mock.api.vault.readFile('Test.canvas')).nodes[0].color).toBeUndefined())
+    await waitFor(async () => expect(parseCanvas(await mock.api.realm.readFile('Test.canvas')).nodes[0].color).toBeUndefined())
   })
 
   it('shows a selection menu over the selected card, and none with nothing selected', async () => {
@@ -700,7 +700,7 @@ describe('CanvasEditor chrome', () => {
     fireEvent.keyDown(container.querySelector('.canvas-root')!, { key: 'd', ctrlKey: true })
 
     await waitFor(async () => {
-      const data = parseCanvas(await mock.api.vault.readFile('Test.canvas'))
+      const data = parseCanvas(await mock.api.realm.readFile('Test.canvas'))
       expect(data.nodes).toHaveLength(2)
       expect(new Set(data.nodes.map((n) => n.id)).size).toBe(2)
       expect((data.nodes[1] as { text: string }).text).toBe('Hello canvas')
@@ -721,7 +721,7 @@ describe('CanvasEditor chrome', () => {
     fireEvent.keyDown(input, { key: 'Enter' })
 
     await waitFor(async () => {
-      const data = parseCanvas(await mock.api.vault.readFile('Test.canvas'))
+      const data = parseCanvas(await mock.api.realm.readFile('Test.canvas'))
       expect(data.edges[0].label).toBe('therefore')
     })
   })
@@ -736,7 +736,7 @@ describe('CanvasEditor chrome', () => {
     // The edge starts at the spec defaults (from: none, to: arrow), written as
     // neither key; a value equal to its spec default is omitted from the file.
     const ends = async (): Promise<[unknown, unknown]> => {
-      const e = parseCanvas(await mock.api.vault.readFile('Test.canvas')).edges[0]
+      const e = parseCanvas(await mock.api.realm.readFile('Test.canvas')).edges[0]
       return [e.fromEnd, e.toEnd]
     }
     const choose = async (id: string): Promise<void> => {
@@ -776,7 +776,7 @@ describe('CanvasEditor chrome', () => {
     const bg = container.querySelector('.canvas-group-background') as HTMLElement
     expect(bg).toBeTruthy()
     expect(bg.className).toContain('mod-ratio')
-    // The asset URL percent-encodes the vault path, so match the encoded form.
+    // The asset URL percent-encodes the realm path, so match the encoded form.
     expect(bg.style.backgroundImage).toContain(encodeURIComponent('Images/braun.jpg'))
   })
 

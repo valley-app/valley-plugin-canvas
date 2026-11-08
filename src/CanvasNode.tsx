@@ -29,7 +29,7 @@ const WIDGET_OCCLUDER = 'data-plugin-widget-occluder'
 const WIDGET_GESTURES = 'data-plugin-widget-gestures'
 
 /**
- * An `<img>` handed the same `src` string is never re-fetched, so a vault image
+ * An `<img>` handed the same `src` string is never re-fetched, so a realm image
  * that changed on disk keeps serving stale pixels. `useAssetUrl` is renderer-only
  * — a plugin busts its own cache, the way `todo/AttachmentCard` does.
  */
@@ -37,7 +37,7 @@ function useAssetSrc(relPath: string, owner: CanvasOwner): string {
   const [epoch, setEpoch] = React.useState(0)
   React.useEffect(() => {
     if (!relPath || !owner.isActive()) return
-    const off = owner.api.vault.onChanged(event => {
+    const off = owner.api.realm.onChanged(event => {
       if (owner.isActive() && (event.full || event.changes.some(change => change.relPath === relPath || change.kind.endsWith('Dir') && relPath.startsWith(`${change.relPath}/`)))) setEpoch(n => n + 1)
     })
     const offOwner = owner.onDispose(off)
@@ -46,15 +46,15 @@ function useAssetSrc(relPath: string, owner: CanvasOwner): string {
   return `${assetUrlForRelPath(relPath)}?v=${epoch}`
 }
 
-/** Whether `relPath` exists, re-checked when the vault changes it. `null` while unknown. */
+/** Whether `relPath` exists, re-checked when the realm changes it. `null` while unknown. */
 function useFileExists(relPath: string, owner: CanvasOwner): boolean | null {
   const [exists, setExists] = React.useState<boolean | null>(null)
   React.useEffect(() => {
     if (!relPath || !owner.isActive()) return
     let active = true
-    const check = (): void => { void owner.run(() => owner.api.vault.fileInfo(relPath)).then(info => { if (active && owner.isActive()) setExists(Boolean(info)) }).catch(() => { if (active && owner.isActive()) setExists(false) }) }
+    const check = (): void => { void owner.run(() => owner.api.realm.fileInfo(relPath)).then(info => { if (active && owner.isActive()) setExists(Boolean(info)) }).catch(() => { if (active && owner.isActive()) setExists(false) }) }
     check()
-    const off = owner.api.vault.onChanged(event => { if (event.full || event.changes.some(change => change.relPath === relPath || relPath.startsWith(`${change.relPath}/`))) check() })
+    const off = owner.api.realm.onChanged(event => { if (event.full || event.changes.some(change => change.relPath === relPath || relPath.startsWith(`${change.relPath}/`))) check() })
     const offOwner = owner.onDispose(off)
     return () => { active = false; offOwner(); off() }
   }, [relPath, owner])
@@ -500,14 +500,14 @@ const MarkdownFileBody = (props: { owner: CanvasOwner; node: FileNode; editing: 
   const [epoch, setEpoch] = React.useState(0)
   React.useEffect(() => {
     if (!owner.isActive()) return
-    const off = api.vault.onChanged(event => { if (event.full || event.changes.some(change => change.relPath === node.file)) setEpoch(n => n + 1) })
+    const off = api.realm.onChanged(event => { if (event.full || event.changes.some(change => change.relPath === node.file)) setEpoch(n => n + 1) })
     const offOwner = owner.onDispose(off)
     return () => { offOwner(); off() }
   }, [api, owner, node.file])
   React.useEffect(() => {
     let cancelled = false
     setError('')
-    void owner.run(() => api.vault.readFileBaseline(node.file)).then((file) => {
+    void owner.run(() => api.realm.readFileBaseline(node.file)).then((file) => {
       if (!file?.baseline) throw new Error(uiText('canvas.error.preview'))
       if (!cancelled && owner.isActive()) setMarkdown(file.content)
     }).catch(reason => { if (!cancelled && owner.isActive()) setError(reason instanceof Error ? reason.message : uiText('canvas.error.preview')) })
@@ -534,7 +534,7 @@ const MarkdownFileEditor = (props: { owner: CanvasOwner; path: string; initial: 
   const state = React.useRef<{ baseline: FileBaseline | null; saved: string; pending: string; timer?: ReturnType<typeof setTimeout>; writing: Promise<void>; failed: boolean }>({ baseline: null, saved: props.initial, pending: props.initial, writing: Promise.resolve(), failed: false })
   React.useEffect(() => {
     let active = true
-    void owner.run(() => owner.api.vault.readFileBaseline(path)).then(file => {
+    void owner.run(() => owner.api.realm.readFileBaseline(path)).then(file => {
       if (!active || !file) return
       if (file.content !== props.initial) { state.current.failed = true; setError(uiText('canvas.error.noteChanged')); return }
       state.current.baseline = file.baseline
@@ -547,7 +547,7 @@ const MarkdownFileEditor = (props: { owner: CanvasOwner; path: string; initial: 
     current.writing = current.writing.then(async () => {
       if (current.failed || !current.baseline || current.pending === current.saved || !owner.isActive()) return
       const text = current.pending
-      const result = await owner.run(() => owner.api.vault.writeFileGuarded(path, text, current.baseline))
+      const result = await owner.run(() => owner.api.realm.writeFileGuarded(path, text, current.baseline))
       if (result.ok) { current.baseline = result.baseline; current.saved = text; return }
       current.failed = true
       setError(uiText(result.reason === 'conflict' ? 'canvas.error.noteChanged' : 'canvas.error.noteSave'))

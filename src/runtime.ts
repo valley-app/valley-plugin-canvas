@@ -19,7 +19,7 @@ const owners = new WeakMap<ValleyPluginApi, CanvasOwner>()
 let current: CanvasOwner | undefined
 
 function createOwner(source: ValleyPluginApi, previous?: CanvasOwner): CanvasOwner {
-  const root = source.getState().vault?.path
+  const root = source.getState().realm?.path
   let active = true
   const pending = new Set<Promise<unknown>>()
   const values = new Map<string, unknown>()
@@ -32,7 +32,7 @@ function createOwner(source: ValleyPluginApi, previous?: CanvasOwner): CanvasOwn
   let offUnload = (): void => {}
   const owner: CanvasOwner = {
     api: source, root,
-    isActive: () => { if (!active) return false; try { return source.getState().vault?.path === root } catch { return false } },
+    isActive: () => { if (!active) return false; try { return source.getState().realm?.path === root } catch { return false } },
     assertActive: () => { if (!owner.isActive()) throw new Error('The canvas session is no longer active.') },
     run: <T,>(operation: () => T | Promise<T>): Promise<T> => {
       const task = (async () => { if (waiting) await barrier; owner.assertActive(); return operation() })()
@@ -52,7 +52,7 @@ function createOwner(source: ValleyPluginApi, previous?: CanvasOwner): CanvasOwn
       while (pending.size) await Promise.allSettled([...pending])
     }
   }
-  offState = source.subscribeState(['vault'], () => { if (!owner.isActive()) void owner.dispose() })
+  offState = source.subscribeState(['realm'], () => { if (!owner.isActive()) void owner.dispose() })
   offUnload = source.runtime.onBeforeUnload(async () => {
     owner.assertActive()
     const results = await Promise.allSettled([...flushers].map((flush) => flush()))
@@ -72,7 +72,7 @@ export function initRuntime(a: ValleyPluginApi): CanvasOwner {
   if (previous) void previous.dispose()
   api = a
   React = a.React
-  current = createOwner(a, previous?.root === a.getState().vault?.path ? previous : owners.get(a))
+  current = createOwner(a, previous?.root === a.getState().realm?.path ? previous : owners.get(a))
   return current
 }
 

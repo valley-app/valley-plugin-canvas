@@ -43,21 +43,21 @@ describe('canvas:create', () => {
     expect(mock.commands.find((command) => command.id === 'create')?.sideEffect).toBe('write')
     await createCanvasFromUi(mock.api)
 
-    expect(await mock.api.vault.readFile('Boards/Untitled 1.canvas')).toBe(EMPTY_CANVAS)
-    expect(mock.api.vault.writeFile).not.toHaveBeenCalled()
-    expect(mock.api.vault.writeFileGuarded).toHaveBeenCalledOnce()
-    expect(mock.api.vault.writeFileGuarded).toHaveBeenCalledWith('Boards/Untitled 1.canvas', EMPTY_CANVAS, null)
+    expect(await mock.api.realm.readFile('Boards/Untitled 1.canvas')).toBe(EMPTY_CANVAS)
+    expect(mock.api.realm.writeFile).not.toHaveBeenCalled()
+    expect(mock.api.realm.writeFileGuarded).toHaveBeenCalledOnce()
+    expect(mock.api.realm.writeFileGuarded).toHaveBeenCalledWith('Boards/Untitled 1.canvas', EMPTY_CANVAS, null)
     expect(mock.api.workspace.openFile).toHaveBeenCalledWith('Boards/Untitled 1.canvas')
     expect(mock.busUndo).toHaveLength(1)
     await mock.busUndo[0].undo()
-    expect(await mock.api.vault.stat('Boards/Untitled 1.canvas')).toBeNull()
+    expect(await mock.api.realm.stat('Boards/Untitled 1.canvas')).toBeNull()
     await mock.busUndo[0].redo?.()
-    expect(await mock.api.vault.readFile('Boards/Untitled 1.canvas')).toBe(EMPTY_CANVAS)
+    expect(await mock.api.realm.readFile('Boards/Untitled 1.canvas')).toBe(EMPTY_CANVAS)
   })
 
   it('does not open a file when the guarded write fails', async () => {
     const mock = createMockValleyApi({ manifest: { id: 'canvas' } })
-    vi.mocked(mock.api.vault.writeFileGuarded).mockResolvedValueOnce({ ok: false, reason: 'error' })
+    vi.mocked(mock.api.realm.writeFileGuarded).mockResolvedValueOnce({ ok: false, reason: 'error' })
     registerCanvasCommands(mock.api)
 
     const observed = await mock.api.commands.execute('canvas:create-observe', { path: 'Untitled.canvas' })
@@ -76,22 +76,22 @@ describe('canvas:create', () => {
     expect(await mock.api.commands.execute('canvas:create-new', {})).toMatchObject({ ok: true, value: null })
     expect(Date.now() - started).toBeLessThan(1000)
     expect(nested).not.toHaveBeenCalled()
-    expect(mock.api.vault.writeFileGuarded).toHaveBeenCalledOnce()
-    expect(await mock.api.vault.readFile('Boards/Untitled 1.canvas')).toBe(EMPTY_CANVAS); expect(await mock.api.vault.stat('Boards/Untitled 2.canvas')).toBeNull()
+    expect(mock.api.realm.writeFileGuarded).toHaveBeenCalledOnce()
+    expect(await mock.api.realm.readFile('Boards/Untitled 1.canvas')).toBe(EMPTY_CANVAS); expect(await mock.api.realm.stat('Boards/Untitled 2.canvas')).toBeNull()
     expect(mock.api.workspace.openFile).toHaveBeenCalledOnce(); expect(mock.api.workspace.openFile).toHaveBeenCalledWith('Boards/Untitled 1.canvas')
     expect(mock.busUndo).toHaveLength(1)
     await mock.busUndo[0].undo()
-    expect(await mock.api.vault.stat('Boards/Untitled 1.canvas')).toBeNull(); expect(await mock.api.vault.readFile('Boards/Untitled.canvas')).toBe('occupied')
+    expect(await mock.api.realm.stat('Boards/Untitled 1.canvas')).toBeNull(); expect(await mock.api.realm.readFile('Boards/Untitled.canvas')).toBe('occupied')
   })
 
   it('refuses undo after the created file was edited', async () => {
     const mock = createMockValleyApi({ manifest: { id: 'canvas' } })
     registerCanvasCommands(mock.api)
     await createCanvasFromUi(mock.api)
-    await mock.api.vault.writeFile('Untitled.canvas', 'edited')
+    await mock.api.realm.writeFile('Untitled.canvas', 'edited')
 
     await expect(mock.busUndo[0].undo()).rejects.toThrow('Refusing to remove edited file')
-    expect(await mock.api.vault.readFile('Untitled.canvas')).toBe('edited')
+    expect(await mock.api.realm.readFile('Untitled.canvas')).toBe('edited')
   })
 })
 
@@ -105,11 +105,11 @@ describe('explicit canvas edits', () => {
     const { revision } = await readCanvasTarget(mock.api, 'Board.canvas')
     const result = await editCanvasTarget(mock.api, 'Board.canvas', { type: 'update-node', id: 'card', values: { text: 'Edited' } }, revision)
     expect(result.value.data.nodes[0]).toMatchObject({ text: 'Edited', nativeExtra: 'preserved' })
-    expect(await mock.api.vault.readFile('Other.canvas')).toBe(EMPTY_CANVAS)
+    expect(await mock.api.realm.readFile('Other.canvas')).toBe(EMPTY_CANVAS)
     await result.revert.run()
     expect((await readCanvasTarget(mock.api, 'Board.canvas')).data).toEqual(original)
     await result.revert.reapply()
-    await mock.api.vault.writeFile('Board.canvas', EMPTY_CANVAS)
+    await mock.api.realm.writeFile('Board.canvas', EMPTY_CANVAS)
     await expect(result.revert.run()).rejects.toThrow('newer work')
   })
 
@@ -125,7 +125,7 @@ describe('explicit canvas edits', () => {
     const create = mock.commands.find((command) => command.id === 'create') as unknown as { run(input: unknown, context: unknown): Promise<unknown> }
     await expect(create.run({ path: 'Fresh.canvas', expectedRevision: 'never-observed', open: false }, {})).rejects.toEqual(notApplied('REVISION_CONFLICT'))
     await expect(create.run({ path: 'Board.canvas', expectedRevision: 'never-observed', open: false }, {})).rejects.toEqual(notApplied('REVISION_CONFLICT'))
-    expect(await mock.api.vault.stat('Fresh.canvas')).toBeNull()
+    expect(await mock.api.realm.stat('Fresh.canvas')).toBeNull()
   })
 
   it('rejects stale, missing, invisible fields and unsafe links before writing', async () => {
@@ -134,7 +134,7 @@ describe('explicit canvas edits', () => {
     await expect(editCanvasTarget(mock.api, 'Board.canvas', { type: 'update-node', id: 'missing', values: { text: 'x' } }, serializeCanvas(original))).rejects.toThrow('no longer exists')
     expect(() => applyCanvasOperation(original, { type: 'update-node', id: 'card', values: { file: 'Other.md' } })).toThrow('Unsupported')
     expect(() => applyCanvasOperation(original, { type: 'add-node', node: { type: 'link', x: 0, y: 0, url: 'javascript:alert(1)' } })).toThrow('Unsafe')
-    expect(mock.api.vault.writeFileGuarded).not.toHaveBeenCalled()
+    expect(mock.api.realm.writeFileGuarded).not.toHaveBeenCalled()
   })
 
   it('uses the live session and never bypasses a refused editor commit', async () => {
@@ -145,7 +145,7 @@ describe('explicit canvas edits', () => {
     expect((await readCanvasTarget(mock.api, 'Board.canvas')).data).toBe(live)
     await expect(editCanvasTarget(mock.api, 'Board.canvas', { type: 'delete-nodes', ids: ['card'] }, serializeCanvas(live))).rejects.toThrow('read-only')
     expect(commit).toHaveBeenCalledTimes(1)
-    expect(mock.api.vault.writeFileGuarded).not.toHaveBeenCalled()
+    expect(mock.api.realm.writeFileGuarded).not.toHaveBeenCalled()
     off()
   })
 
@@ -172,7 +172,7 @@ describe('explicit canvas edits', () => {
     expect(await properties.revision!(propertyInput)).toBe(before)
     expect(edit.preview!(editInput)).toMatchObject({ path: 'Board.canvas', operation: { type: 'update-node' } })
     expect(properties.preview!(propertyInput)).toMatchObject({ path: 'Board.canvas', values: { color: '1' } })
-    await mock.api.vault.writeFile('Board.canvas', EMPTY_CANVAS)
+    await mock.api.realm.writeFile('Board.canvas', EMPTY_CANVAS)
     expect(await edit.revision!(editInput)).not.toBe(before)
     expect(await properties.revision!(propertyInput)).not.toBe(before)
   })
@@ -181,6 +181,6 @@ describe('explicit canvas edits', () => {
     const mock = setup()
     saveCanvasDraft('Board.canvas', { data: original, baseline: null, lastWritten: null, error: 'conflict' })
     await expect(editCanvasTarget(mock.api, 'Board.canvas', { type: 'delete-nodes', ids: ['card'] }, serializeCanvas(original))).rejects.toThrow('unsaved draft')
-    expect(mock.api.vault.writeFileGuarded).not.toHaveBeenCalled()
+    expect(mock.api.realm.writeFileGuarded).not.toHaveBeenCalled()
   })
 })

@@ -4,7 +4,7 @@ Infinite canvas for JSON Canvas `.canvas` files: text, note, media and web page 
 
 This repository owns the plugin’s interface, behavior, dependencies, schemas, tests, translations, and compiled releases. It uses Valley manifest API 5 and the injected SDK 6.
 
-Valley ships this core plugin as a verified release artifact in its application resources and copies that exact package into the vault's `.valley/plugins/packages/core/canvas/` when the vault opens, replacing the copy whenever the bundled release differs; never edit that copy by hand. Core and external installations run with the same sandbox, permissions, and SDK/IPC contract. Ordinary vault documents and saved plugin data (`.valley/plugins/data/canvas/`) keep their existing locations.
+Valley ships this core plugin as a verified release artifact in its application resources and copies that exact package into the realm's `.valley/plugins/packages/core/canvas/` when the realm opens, replacing the copy whenever the bundled release differs; never edit that copy by hand. Core and external installations run with the same sandbox, permissions, and SDK/IPC contract. Ordinary realm documents and saved plugin data (`.valley/plugins/data/canvas/`) keep their existing locations.
 
 ## Package
 
@@ -39,7 +39,7 @@ Explicit Workflow blocks reuse this package’s published owner commands through
 
 Canvas owns the background `canvas:document-inspect`, `canvas:document-read`,
 `canvas:document-create` and `canvas:document-edit` commands. They use the injected
-vault API and never open or focus a viewer. Inspect returns the required observed
+realm API and never open or focus a viewer. Inspect returns the required observed
 revision, including an owner-issued absence revision for creation. Editing accepts
 1–100 operations, validates the complete batch before one guarded write, preserves
 unknown JSON fields, and independently reads the saved bytes before returning

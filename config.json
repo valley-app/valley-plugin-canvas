@@ -7,7 +7,7 @@
   "permissions": {
     "browser": {},
     "storage": {
-      "vault": true
+      "realm": true
     }
   },
   "fileViews": {
@@ -203,7 +203,7 @@
                   "properties": {
                     "folder": {
                       "type": "string",
-                      "description": "Explicit vault-relative destination folder. An empty string selects the vault root."
+                      "description": "Explicit realm-relative destination folder. An empty string selects the realm root."
                     },
                     "targetWindowId": {
                       "type": "integer",

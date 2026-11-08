@@ -11,7 +11,7 @@ import {
 /** Chrome drawn above host content: host widgets leave a hole wherever it overlaps them. */
 export const OCCLUDER = { 'data-plugin-widget-occluder': '' }
 
-/** Card kinds the bottom menu creates; `note` and `media` pick a vault file first. */
+/** Card kinds the bottom menu creates; `note` and `media` pick a realm file first. */
 export type CreateKind = 'text' | 'note' | 'media' | 'link' | 'group'
 
 /**
@@ -254,7 +254,7 @@ export const HelpContent = (props: { mac: boolean }): ReturnType<typeof React.cr
   )
 }
 
-/** Suggest a vault file by name: notes/canvases/bases for `note`, attachments for `media`. */
+/** Suggest a realm file by name: notes/canvases/bases for `note`, attachments for `media`. */
 export const FileSuggest = (props: {
   owner: CanvasOwner
   kind: 'note' | 'media'
@@ -273,7 +273,7 @@ export const FileSuggest = (props: {
   React.useEffect(() => {
     let current = true
     const request = props.kind === 'note'
-      ? { query, kinds: ['vault-file'], limit: 40, filters: { extensions: ['md', 'markdown', 'canvas', 'base'] } }
+      ? { query, kinds: ['realm-file'], limit: 40, filters: { extensions: ['md', 'markdown', 'canvas', 'base'] } }
       : { query, kinds: ['attachment'], limit: 40, filters: { extensions: MEDIA_EXTENSIONS } }
     void owner.run(() => owner.api.resources.search(request)).then((found) => { if (current) { setResults(found); setActive(0) } }).catch(() => { if (current) setResults([]) })
     return () => { current = false }

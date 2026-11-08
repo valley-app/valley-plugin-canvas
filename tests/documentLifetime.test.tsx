@@ -25,7 +25,7 @@ function deferred<T>() { let resolve!: (value: T) => void; const promise = new P
 const owners: CanvasOwner[] = []
 function setup(data: CanvasData = original) {
   const mock = withHostUi(createMockValleyApi({ manifest: { id: 'canvas' }, files: { 'Test.canvas': serializeCanvas(data), 'Other.canvas': serializeCanvas(scene('Other')) } }))
-  vi.spyOn(mock.api.vault, 'readFileBaseline')
+  vi.spyOn(mock.api.realm, 'readFileBaseline')
   const owner = initRuntime(mock.api); owners.push(owner)
   return { mock, owner }
 }
@@ -44,7 +44,7 @@ describe('mounted Canvas draft admission', () => {
     const { mock, owner } = setup()
     const { document, detach } = await ready(owner)
     let provider!: PluginEditorProvider
-    Object.assign(mock.api.vault, { editors: { register: (_view: MountedPluginView, value: PluginEditorProvider) => { provider = value; return () => {} }, save: vi.fn() } })
+    Object.assign(mock.api.realm, { editors: { register: (_view: MountedPluginView, value: PluginEditorProvider) => { provider = value; return () => {} }, save: vi.fn() } })
     const mounted = view('terminal'), raw = { revision: 0, dirty: false, active: true }
     const off = document.attachEditor(mounted, () => raw, () => {})
     expect(await provider.getSnapshot()).toMatchObject({ dirty: false, readiness: 'ready' })
@@ -58,13 +58,13 @@ describe('mounted Canvas draft admission', () => {
     expect(document.get().data).toEqual(final)
     expect(await provider.getSnapshot()).toEqual(terminal)
     expect(() => provider.prepare(terminal.revision, { operationId: 'late', fenceId: 'late', deadline: Date.now() + 5000, ownSave: false })).toThrow('changed or is unavailable')
-    expect(mock.api.vault.writeFileGuarded).not.toHaveBeenCalled()
+    expect(mock.api.realm.writeFileGuarded).not.toHaveBeenCalled()
   })
   it('refuses an independent raw alias and freezes every shared model mutation until release', async () => {
     const { mock, owner } = setup()
     const { document, detach } = await ready(owner)
     let provider!: PluginEditorProvider
-    Object.assign(mock.api.vault, { editors: { register: (_view: MountedPluginView, value: PluginEditorProvider) => { provider = value; return () => {} }, save: vi.fn() } })
+    Object.assign(mock.api.realm, { editors: { register: (_view: MountedPluginView, value: PluginEditorProvider) => { provider = value; return () => {} }, save: vi.fn() } })
     const raw = { revision: 0, dirty: true, active: true }
     const freeze = vi.fn()
     const off = document.attachEditor(view('left'), () => raw, freeze)
@@ -89,13 +89,13 @@ describe('mounted Canvas draft admission', () => {
     expect(published.mock.calls.length).toBeGreaterThan(beforeRelease)
     unsubscribe()
     off(); detach()
-    expect(mock.api.vault.writeFileGuarded).not.toHaveBeenCalled()
+    expect(mock.api.realm.writeFileGuarded).not.toHaveBeenCalled()
   })
   it('saves the exact pending mounted payload while an unchanged shared copy stays clean', async () => {
     const { mock, owner } = setup()
     const { document, detach } = await ready(owner)
     const providers = new Map<string, PluginEditorProvider>()
-    const write = mock.api.vault.writeFileGuarded
+    const write = mock.api.realm.writeFileGuarded
     const save = vi.fn(async (target: MountedPluginView, content: string, expected: Parameters<typeof write>[2], revision: string) => {
       const source = providers.get(target.mountId)!
       const own = await source.prepare(revision, { operationId: 'save', fenceId: 'own', deadline: Date.now() + 5000, ownSave: true })
@@ -106,14 +106,14 @@ describe('mounted Canvas draft admission', () => {
       try { await own.validate(); await opposite.validate(); return await write(target.filePath, content, expected) }
       finally { await opposite.release(); await own.release() }
     })
-    Object.assign(mock.api.vault, { editors: { register: (target: MountedPluginView, value: PluginEditorProvider) => { providers.set(target.mountId, value); return () => { providers.delete(target.mountId) } }, save } })
+    Object.assign(mock.api.realm, { editors: { register: (target: MountedPluginView, value: PluginEditorProvider) => { providers.set(target.mountId, value); return () => { providers.delete(target.mountId) } }, save } })
     const left = view('left'), right = view('right')
     const offLeft = document.attachEditor(left, () => ({ revision: 0, dirty: false, active: true }), () => {})
     const offRight = document.attachEditor(right, () => ({ revision: 0, dirty: false, active: true }), () => {})
     document.setData(scene('Exact pending'), left); document.schedule(document.get().data, left)
     await document.flush()
     expect(save).toHaveBeenCalledOnce()
-    expect(parseCanvas(await mock.api.vault.readFile('Test.canvas')).nodes[0]).toMatchObject({ text: 'Exact pending' })
+    expect(parseCanvas(await mock.api.realm.readFile('Test.canvas')).nodes[0]).toMatchObject({ text: 'Exact pending' })
     expect(await providers.get('left')!.getSnapshot()).toMatchObject({ dirty: false })
     offLeft(); offRight(); detach()
   })
@@ -127,12 +127,12 @@ describe('durable Canvas recovery', () => {
     const owner = initRuntime(first.api); owners.push(owner)
     const { document, detach } = await ready(owner)
     const held = deferred<void>()
-    const write = first.api.vault.drafts.write
-    const journal = vi.spyOn(first.api.vault.drafts, 'write').mockImplementationOnce(async (...args) => { await held.promise; return write(...args) })
+    const write = first.api.realm.drafts.write
+    const journal = vi.spyOn(first.api.realm.drafts, 'write').mockImplementationOnce(async (...args) => { await held.promise; return write(...args) })
     document.setData(scene('Held recovery')); document.schedule(document.get().data)
     await vi.waitFor(() => expect(journal).toHaveBeenCalledOnce())
     const fresh = withHostUi(createMockValleyApi(options))
-    const read = vi.spyOn(fresh.api.vault.drafts, 'read')
+    const read = vi.spyOn(fresh.api.realm.drafts, 'read')
     const replacement = initRuntime(fresh.api); owners.push(replacement)
     const recovered = canvasDocument(replacement, 'Test.canvas')
     const close = recovered.attach()
@@ -154,13 +154,13 @@ describe('durable Canvas recovery', () => {
     document.setData(scene('Recovered ä ö ü')); document.schedule(document.get().data)
     detach(); await owner.dispose()
     expect(fileDrafts.size).toBe(1)
-    expect(first.api.vault.writeFileGuarded).not.toHaveBeenCalled()
+    expect(first.api.realm.writeFileGuarded).not.toHaveBeenCalled()
     const fresh = withHostUi(createMockValleyApi(options))
     const replacement = initRuntime(fresh.api); owners.push(replacement)
     const { document: recovered, detach: close } = await ready(replacement)
     expect(recovered.get().data.nodes[0]).toMatchObject({ text: 'Recovered ä ö ü' })
     await recovered.flushPending()
-    expect(await fresh.api.vault.readFile('Test.canvas')).toContain('Recovered ä ö ü')
+    expect(await fresh.api.realm.readFile('Test.canvas')).toContain('Recovered ä ö ü')
     expect(fileDrafts.size).toBe(0)
     close()
   })
@@ -169,8 +169,8 @@ describe('durable Canvas recovery', () => {
     const { mock, owner } = setup()
     const { document, detach } = await ready(owner)
     const held = deferred<void>()
-    const write = mock.api.vault.drafts.write
-    const journal = vi.spyOn(mock.api.vault.drafts, 'write').mockImplementationOnce(async (...args) => { await held.promise; return write(...args) })
+    const write = mock.api.realm.drafts.write
+    const journal = vi.spyOn(mock.api.realm.drafts, 'write').mockImplementationOnce(async (...args) => { await held.promise; return write(...args) })
     document.setData(scene('First')); document.schedule(document.get().data)
     await vi.waitFor(() => expect(journal).toHaveBeenCalledOnce())
     for (let index = 0; index < 20; index++) { document.setData(scene(`Newest ${index}`)); document.schedule(document.get().data) }
@@ -182,50 +182,50 @@ describe('durable Canvas recovery', () => {
     held.resolve()
     await disposing
     expect(journal).toHaveBeenCalledTimes(2)
-    expect((await mock.api.vault.drafts.read('Test.canvas', 'editor'))?.draft.content).toContain('Newest 19')
-    expect(mock.api.vault.writeFileGuarded).not.toHaveBeenCalled()
+    expect((await mock.api.realm.drafts.read('Test.canvas', 'editor'))?.draft.content).toContain('Newest 19')
+    expect(mock.api.realm.writeFileGuarded).not.toHaveBeenCalled()
   })
 
   it('never enables edits or file writes when recovery cannot be read', async () => {
     const { mock, owner } = setup()
-    vi.spyOn(mock.api.vault.drafts, 'read').mockRejectedValue(new Error('Journal unavailable'))
+    vi.spyOn(mock.api.realm.drafts, 'read').mockRejectedValue(new Error('Journal unavailable'))
     const document = canvasDocument(owner, 'Test.canvas')
     const detach = document.attach()
     await vi.waitFor(() => expect(document.get().error).toContain('Journal unavailable'))
     document.setData(scene('Unsafe')); document.schedule(document.get().data)
     expect(document.get().ready).toBe(false)
-    expect(mock.api.vault.readFileBaseline).not.toHaveBeenCalled()
-    expect(mock.api.vault.writeFileGuarded).not.toHaveBeenCalled()
+    expect(mock.api.realm.readFileBaseline).not.toHaveBeenCalled()
+    expect(mock.api.realm.writeFileGuarded).not.toHaveBeenCalled()
     detach()
   })
 
   it('retains newer journal data and blocks automatic retries after conflict', async () => {
     const { mock, owner } = setup()
     const { document, detach } = await ready(owner)
-    await mock.api.vault.drafts.write('Test.canvas', 'editor', { content: 'Another session', baseline: null }, null)
-    const read = vi.spyOn(mock.api.vault.drafts, 'read')
+    await mock.api.realm.drafts.write('Test.canvas', 'editor', { content: 'Another session', baseline: null }, null)
+    const read = vi.spyOn(mock.api.realm.drafts, 'read')
     document.setData(scene('Local preserved')); document.schedule(document.get().data)
     await expect(document.flushPending()).rejects.toThrow('another session')
     await expect(document.flush()).rejects.toThrow('another session')
     expect(read).not.toHaveBeenCalled()
     expect(document.get().data.nodes[0]).toMatchObject({ text: 'Local preserved' })
-    expect(mock.api.vault.writeFileGuarded).not.toHaveBeenCalled()
+    expect(mock.api.realm.writeFileGuarded).not.toHaveBeenCalled()
     detach()
   })
 
   it('blocks detached commands on persisted recovery from another runtime', async () => {
     const { mock } = setup()
-    await mock.api.vault.drafts.write('Test.canvas', 'editor', { content: serializeCanvas(scene('Saved draft')), baseline: null }, null)
+    await mock.api.realm.drafts.write('Test.canvas', 'editor', { content: serializeCanvas(scene('Saved draft')), baseline: null }, null)
     await expect(editCanvasTarget(mock.api, 'Test.canvas', { type: 'delete-nodes', ids: ['a'] }, serializeCanvas(original))).rejects.toThrow('unsaved draft')
-    expect(mock.api.vault.readFileBaseline).not.toHaveBeenCalled()
-    expect(mock.api.vault.writeFileGuarded).not.toHaveBeenCalled()
+    expect(mock.api.realm.readFileBaseline).not.toHaveBeenCalled()
+    expect(mock.api.realm.writeFileGuarded).not.toHaveBeenCalled()
   })
 
   it('keeps an uncertain journal commit and never repeats it automatically', async () => {
     const { mock, owner } = setup()
     const { document, detach } = await ready(owner)
-    const write = mock.api.vault.drafts.write
-    const journal = vi.spyOn(mock.api.vault.drafts, 'write').mockImplementationOnce(async (...args) => {
+    const write = mock.api.realm.drafts.write
+    const journal = vi.spyOn(mock.api.realm.drafts, 'write').mockImplementationOnce(async (...args) => {
       await write(...args)
       throw Object.assign(new Error('Journal acknowledgement lost'), { outcomeUnknown: true, retryable: false })
     })
@@ -233,8 +233,8 @@ describe('durable Canvas recovery', () => {
     await expect(document.flushPending()).rejects.toThrow('acknowledgement lost')
     await expect(document.flush()).rejects.toThrow('acknowledgement lost')
     expect(journal).toHaveBeenCalledOnce()
-    expect((await mock.api.vault.drafts.read('Test.canvas', 'editor'))?.draft.content).toContain('Uncertain preserved')
-    expect(mock.api.vault.writeFileGuarded).not.toHaveBeenCalled()
+    expect((await mock.api.realm.drafts.read('Test.canvas', 'editor'))?.draft.content).toContain('Uncertain preserved')
+    expect(mock.api.realm.writeFileGuarded).not.toHaveBeenCalled()
     detach()
   })
 })
@@ -245,7 +245,7 @@ describe('captured Canvas document authority', () => {
     const first = render(<CanvasEditor relPath="Test.canvas" tab={TAB} />)
     const second = render(<CanvasEditor relPath="Test.canvas" tab={TAB} />)
     await waitFor(() => expect(screen.getAllByText('Original')).toHaveLength(2))
-    expect(mock.api.vault.readFileBaseline).toHaveBeenCalledTimes(1)
+    expect(mock.api.realm.readFileBaseline).toHaveBeenCalledTimes(1)
     fireEvent.doubleClick(within(first.container).getByText('Original'))
     const input = within(first.container).getByDisplayValue('Original')
     fireEvent.change(input, { target: { value: 'Shared draft' } }); fireEvent.keyDown(input, { key: 'Escape' })
@@ -253,8 +253,8 @@ describe('captured Canvas document authority', () => {
     second.unmount()
     expect(canvasSession('Test.canvas')?.get().data.nodes[0]).toMatchObject({ text: 'Shared draft' })
     await act(async () => { await editCanvasTarget(mock.api, 'Test.canvas', { type: 'update-node', id: 'a', values: { x: 72 } }, canvasSession('Test.canvas')!.get().revision) })
-    expect(parseCanvas(await mock.api.vault.readFile('Test.canvas')).nodes[0]).toMatchObject({ text: 'Shared draft', x: 72 })
-    expect(mock.api.vault.writeFileGuarded).toHaveBeenCalledTimes(1)
+    expect(parseCanvas(await mock.api.realm.readFile('Test.canvas')).nodes[0]).toMatchObject({ text: 'Shared draft', x: 72 })
+    expect(mock.api.realm.writeFileGuarded).toHaveBeenCalledTimes(1)
     first.unmount()
     expect(canvasSession('Test.canvas')).toBeUndefined()
   })
@@ -269,8 +269,8 @@ describe('captured Canvas document authority', () => {
     const add = items.find((item) => 'label' in item && item.label === 'Add card')!
     expect(add).toBeDefined()
     const held = deferred<void>()
-    const write = mock.api.vault.writeFileGuarded
-    vi.spyOn(mock.api.vault, 'writeFileGuarded').mockImplementationOnce(async (...args) => { await held.promise; return write(...args) })
+    const write = mock.api.realm.writeFileGuarded
+    vi.spyOn(mock.api.realm, 'writeFileGuarded').mockImplementationOnce(async (...args) => { await held.promise; return write(...args) })
     let commit!: Promise<void>
     act(() => {
       commit = canvasDocument(owner, 'Test.canvas').commit(scene('Command'), serializeCanvas(original))
@@ -283,33 +283,33 @@ describe('captured Canvas document authority', () => {
 
   it('drains an accepted read but stops its invalidation loop and publication after repeated disposal', async () => {
     const { mock, owner } = setup()
-    const file = await mock.api.vault.readFileBaseline('Test.canvas')
+    const file = await mock.api.realm.readFileBaseline('Test.canvas')
     const pending = deferred<typeof file>()
-    vi.mocked(mock.api.vault.readFileBaseline).mockClear().mockImplementationOnce(() => pending.promise)
+    vi.mocked(mock.api.realm.readFileBaseline).mockClear().mockImplementationOnce(() => pending.promise)
     const document = canvasDocument(owner, 'Test.canvas')
     const changed = vi.fn(); document.subscribe(changed)
     const detach = document.attach()
-    await vi.waitFor(() => expect(mock.api.vault.readFileBaseline).toHaveBeenCalledTimes(1))
-    mock.emitVaultChanged({ changes: [{ relPath: 'Test.canvas', kind: 'change' }] })
+    await vi.waitFor(() => expect(mock.api.realm.readFileBaseline).toHaveBeenCalledTimes(1))
+    mock.emitRealmChanged({ changes: [{ relPath: 'Test.canvas', kind: 'change' }] })
     let settled = false
     const closing = owner.dispose().then(() => { settled = true })
     await Promise.resolve(); expect(settled).toBe(false)
     pending.resolve(file); await closing; await owner.dispose(); detach(); detach()
     expect(document.get().ready).toBe(false)
     expect(changed).not.toHaveBeenCalled()
-    expect(mock.api.vault.readFileBaseline).toHaveBeenCalledTimes(1)
-    expect(mock.api.vault.writeFileGuarded).not.toHaveBeenCalled()
+    expect(mock.api.realm.readFileBaseline).toHaveBeenCalledTimes(1)
+    expect(mock.api.realm.writeFileGuarded).not.toHaveBeenCalled()
   })
 
   it('recovers a newer dirty edit through the new owner after its predecessor write settles and refuses queued saves', async () => {
     const { mock, owner } = setup()
     const { document, detach } = await ready(owner)
-    const write = mock.api.vault.writeFileGuarded
+    const write = mock.api.realm.writeFileGuarded
     const held = deferred<void>()
-    vi.spyOn(mock.api.vault, 'writeFileGuarded').mockImplementationOnce(async (...args) => { await held.promise; return write(...args) })
+    vi.spyOn(mock.api.realm, 'writeFileGuarded').mockImplementationOnce(async (...args) => { await held.promise; return write(...args) })
     document.setData(scene('First')); document.schedule(document.get().data)
     const first = document.flush()
-    await vi.waitFor(() => expect(mock.api.vault.writeFileGuarded).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(mock.api.realm.writeFileGuarded).toHaveBeenCalledTimes(1))
     document.setData(scene('Newest')); document.schedule(document.get().data)
     const queued = document.flush().catch((reason: unknown) => reason)
     const replacement = initRuntime(mock.api); owners.push(replacement)
@@ -320,26 +320,26 @@ describe('captured Canvas document authority', () => {
     await vi.waitFor(() => expect(reopened.get().ready).toBe(true))
     expect(reopened.get().data.nodes[0]).toMatchObject({ text: 'Newest' })
     expect(canvasDraft('Test.canvas', replacement)?.data.nodes[0]).toMatchObject({ text: 'Newest' })
-    expect(mock.api.vault.writeFileGuarded).toHaveBeenCalledTimes(1)
+    expect(mock.api.realm.writeFileGuarded).toHaveBeenCalledTimes(1)
     await reopened.flushPending()
-    expect(parseCanvas(await mock.api.vault.readFile('Test.canvas')).nodes[0]).toMatchObject({ text: 'Newest' })
+    expect(parseCanvas(await mock.api.realm.readFile('Test.canvas')).nodes[0]).toMatchObject({ text: 'Newest' })
     expect(canvasDraft('Test.canvas', replacement)).toBeUndefined()
     detach(); close()
   })
 
-  it('retains recovery across a vault A to B to A generation without sending old work to B', async () => {
+  it('retains recovery across a realm A to B to A generation without sending old work to B', async () => {
     const { mock, owner } = setup()
     const { document, detach } = await ready(owner)
     document.setData(scene('Recovery')); document.schedule(document.get().data)
-    const vault = mock.api.getState().vault
-    mock.emitState({ vault: { ...vault, path: '/fixture-other' } as NonNullable<typeof vault> })
-    mock.emitState({ vault })
+    const realm = mock.api.getState().realm
+    mock.emitState({ realm: { ...realm, path: '/fixture-other' } as NonNullable<typeof realm> })
+    mock.emitState({ realm })
     expect(owner.isActive()).toBe(false)
     await expect(document.flush()).rejects.toThrow('no longer active')
     const replacement = initRuntime(mock.api); owners.push(replacement)
     const { document: recovered, detach: close } = await ready(replacement)
     expect(recovered.get().data.nodes[0]).toMatchObject({ text: 'Recovery' })
-    expect(mock.api.vault.writeFileGuarded).not.toHaveBeenCalled()
+    expect(mock.api.realm.writeFileGuarded).not.toHaveBeenCalled()
     detach(); close()
   })
 
@@ -351,12 +351,12 @@ describe('captured Canvas document authority', () => {
     const reload = document.reload(() => confirm.promise, () => true)
     document.setData(scene('During confirmation')); document.schedule(document.get().data)
     confirm.resolve('reload'); expect(await reload).toBe(false)
-    expect(mock.api.vault.readFileBaseline).toHaveBeenCalledTimes(1)
-    const file = await mock.api.vault.readFileBaseline('Test.canvas')
+    expect(mock.api.realm.readFileBaseline).toHaveBeenCalledTimes(1)
+    const file = await mock.api.realm.readFileBaseline('Test.canvas')
     const held = deferred<typeof file>()
-    vi.mocked(mock.api.vault.readFileBaseline).mockImplementationOnce(() => held.promise)
+    vi.mocked(mock.api.realm.readFileBaseline).mockImplementationOnce(() => held.promise)
     const reading = document.reload(async () => 'reload', () => true)
-    await vi.waitFor(() => expect(mock.api.vault.readFileBaseline).toHaveBeenCalledTimes(3))
+    await vi.waitFor(() => expect(mock.api.realm.readFileBaseline).toHaveBeenCalledTimes(3))
     document.setData(scene('During read')); document.schedule(document.get().data)
     held.resolve(file); expect(await reading).toBe(false)
     expect(document.get().data.nodes[0]).toMatchObject({ text: 'During read' })
@@ -374,7 +374,7 @@ describe('captured Canvas document authority', () => {
     await owner.dispose()
     held.resolve('reload')
     expect(await reload).toBe(false)
-    expect(mock.api.vault.readFileBaseline).toHaveBeenCalledTimes(1)
+    expect(mock.api.realm.readFileBaseline).toHaveBeenCalledTimes(1)
     expect(await document.reload(confirm, () => false)).toBe(false)
     expect(confirm).toHaveBeenCalledTimes(1)
   })
@@ -383,7 +383,7 @@ describe('captured Canvas document authority', () => {
     const { mock, owner } = setup()
     const { document, detach } = await ready(owner)
     document.setData(scene('Keep me')); document.schedule(document.get().data)
-    vi.mocked(mock.api.vault.writeFileGuarded).mockRejectedValueOnce(new Error('Acknowledgement lost'))
+    vi.mocked(mock.api.realm.writeFileGuarded).mockRejectedValueOnce(new Error('Acknowledgement lost'))
     await expect(document.flush()).rejects.toThrow('Acknowledgement lost')
     await expect(mock.runBeforeUnload()).rejects.toThrow('Acknowledgement lost')
     detach()
@@ -392,7 +392,7 @@ describe('captured Canvas document authority', () => {
     await vi.waitFor(() => expect(document.get().ready).toBe(true))
     expect(document.get().data.nodes[0]).toMatchObject({ text: 'Keep me' })
     expect(canvasDraft('Test.canvas', owner)?.error).toContain('Acknowledgement lost')
-    expect(mock.api.vault.writeFileGuarded).toHaveBeenCalledTimes(1)
+    expect(mock.api.realm.writeFileGuarded).toHaveBeenCalledTimes(1)
     reopened()
   })
 
@@ -401,7 +401,7 @@ describe('captured Canvas document authority', () => {
     const { detach } = await ready(owner)
     detach(); await Promise.resolve()
     expect(existingCanvasDocument(owner, 'Test.canvas')).toBeUndefined()
-    vi.mocked(mock.api.vault.readFileBaseline).mockResolvedValueOnce(null)
+    vi.mocked(mock.api.realm.readFileBaseline).mockResolvedValueOnce(null)
     const missing = canvasDocument(owner, 'Missing.canvas'); const close = missing.attach()
     await vi.waitFor(() => expect(missing.get().error).not.toBe(''))
     await expect(mock.runBeforeUnload()).resolves.toBeUndefined()
@@ -414,15 +414,15 @@ describe('captured Canvas document authority', () => {
     const { document, detach } = await ready(owner)
     document.setData(scene('Recovered')); document.schedule(document.get().data)
     const replacement = initRuntime(mock.api); owners.push(replacement)
-    const file = await mock.api.vault.readFileBaseline('Test.canvas')
+    const file = await mock.api.realm.readFileBaseline('Test.canvas')
     const held = deferred<typeof file>()
-    vi.mocked(mock.api.vault.readFileBaseline).mockImplementationOnce(() => held.promise)
+    vi.mocked(mock.api.realm.readFileBaseline).mockImplementationOnce(() => held.promise)
     const reopened = canvasDocument(replacement, 'Test.canvas'); const close = reopened.attach()
     let settled = false
     const unloading = mock.runBeforeUnload().then(() => { settled = true })
     await Promise.resolve(); expect(settled).toBe(false)
     held.resolve(file); await unloading
-    expect(parseCanvas(await mock.api.vault.readFile('Test.canvas')).nodes[0]).toMatchObject({ text: 'Recovered' })
+    expect(parseCanvas(await mock.api.realm.readFile('Test.canvas')).nodes[0]).toMatchObject({ text: 'Recovered' })
     expect(canvasDraft('Test.canvas', replacement)).toBeUndefined()
     detach(); close()
   })
@@ -430,17 +430,17 @@ describe('captured Canvas document authority', () => {
   it('preserves an accepted command write on revoke without later publication or retries', async () => {
     const { mock, owner } = setup()
     const { document, detach } = await ready(owner)
-    const write = mock.api.vault.writeFileGuarded
+    const write = mock.api.realm.writeFileGuarded
     const held = deferred<void>()
-    vi.spyOn(mock.api.vault, 'writeFileGuarded').mockImplementationOnce(async (...args) => { await held.promise; return write(...args) })
+    vi.spyOn(mock.api.realm, 'writeFileGuarded').mockImplementationOnce(async (...args) => { await held.promise; return write(...args) })
     const commit = document.commit(scene('Accepted'), serializeCanvas(original))
-    await vi.waitFor(() => expect(mock.api.vault.writeFileGuarded).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(mock.api.realm.writeFileGuarded).toHaveBeenCalledTimes(1))
     const listener = vi.fn(); document.subscribe(listener)
     const closing = owner.dispose()
     held.resolve(); await commit; await closing
     expect(listener).not.toHaveBeenCalled()
-    expect(parseCanvas(await mock.api.vault.readFile('Test.canvas')).nodes[0]).toMatchObject({ text: 'Accepted' })
-    expect(mock.api.vault.writeFileGuarded).toHaveBeenCalledTimes(1)
+    expect(parseCanvas(await mock.api.realm.readFile('Test.canvas')).nodes[0]).toMatchObject({ text: 'Accepted' })
+    expect(mock.api.realm.writeFileGuarded).toHaveBeenCalledTimes(1)
     detach()
   })
 })
@@ -450,34 +450,34 @@ describe('command, Properties and undo lifetimes', () => {
     const { mock, owner } = setup()
     const off = registerCanvasCommands(mock.api, owner)
     const command = mock.commands.find((entry) => entry.id === 'edit')!
-    const file = await mock.api.vault.readFileBaseline('Test.canvas')
+    const file = await mock.api.realm.readFileBaseline('Test.canvas')
     const held = deferred<typeof file>()
-    vi.mocked(mock.api.vault.readFileBaseline).mockImplementationOnce(() => held.promise)
+    vi.mocked(mock.api.realm.readFileBaseline).mockImplementationOnce(() => held.promise)
     const operation = { type: 'update-node', id: 'a', values: { text: 'Accepted input' } }
     const editing = editCanvasTarget(mock.api, 'Test.canvas', operation, serializeCanvas(original))
     operation.values.text = 'Aliased mutation'; held.resolve(file)
     const result = await editing
     expect(result.value.data.nodes[0]).toMatchObject({ text: 'Accepted input' })
-    off(); vi.mocked(mock.api.vault.readFileBaseline).mockClear(); vi.mocked(mock.api.vault.writeFileGuarded).mockClear()
+    off(); vi.mocked(mock.api.realm.readFileBaseline).mockClear(); vi.mocked(mock.api.realm.writeFileGuarded).mockClear()
     await expect(command.run({ path: 'Test.canvas', operation }, { caller: 'plugin' })).rejects.toThrow('no longer registered')
-    expect(mock.api.vault.readFileBaseline).not.toHaveBeenCalled(); expect(mock.api.vault.writeFileGuarded).not.toHaveBeenCalled()
+    expect(mock.api.realm.readFileBaseline).not.toHaveBeenCalled(); expect(mock.api.realm.writeFileGuarded).not.toHaveBeenCalled()
   })
 
   it('reports uncertain creation after owner revocation without opening or retrying it', async () => {
     const { mock, owner } = setup()
     const off = registerCanvasCommands(mock.api, owner)
-    const write = mock.api.vault.writeFileGuarded
+    const write = mock.api.realm.writeFileGuarded
     const held = deferred<void>()
-    vi.spyOn(mock.api.vault, 'writeFileGuarded').mockImplementationOnce(async (...args) => { await held.promise; return write(...args) })
+    vi.spyOn(mock.api.realm, 'writeFileGuarded').mockImplementationOnce(async (...args) => { await held.promise; return write(...args) })
     const observation = await mock.api.commands.execute('canvas:create-observe', { path: 'Untitled.canvas' })
     const command = mock.commands.find(entry => entry.id === 'create')!
     const create = Promise.resolve(command.run(command.input!.parse(observation.ok ? observation.value : {}), { caller: 'plugin' })).catch((error: unknown) => error)
-    await vi.waitFor(() => expect(mock.api.vault.writeFileGuarded).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(mock.api.realm.writeFileGuarded).toHaveBeenCalledTimes(1))
     off(); held.resolve()
     expect(await create).toMatchObject({ outcome: 'unknown', code: 'OUTCOME_UNKNOWN' })
-    expect(await mock.api.vault.readFile('Untitled.canvas')).toBeTruthy()
+    expect(await mock.api.realm.readFile('Untitled.canvas')).toBeTruthy()
     expect(mock.api.workspace.openFile).not.toHaveBeenCalled()
-    expect(mock.api.vault.writeFileGuarded).toHaveBeenCalledTimes(1)
+    expect(mock.api.realm.writeFileGuarded).toHaveBeenCalledTimes(1)
     expect(mock.busUndo).toHaveLength(0)
   })
 
@@ -487,14 +487,14 @@ describe('command, Properties and undo lifetimes', () => {
     const offSurfaces = registerCanvasSurfaces(mock.api, owner)
     const command = mock.commands.find((entry) => entry.id === 'edit')!
     const surface = mock.api.interop.extensions.providers(PLUGIN_SURFACE_V1)[0].extension
-    const file = await mock.api.vault.readFileBaseline('Test.canvas')
+    const file = await mock.api.realm.readFileBaseline('Test.canvas')
     const held = deferred<typeof file>()
-    vi.mocked(mock.api.vault.readFileBaseline).mockImplementation(() => held.promise)
+    vi.mocked(mock.api.realm.readFileBaseline).mockImplementation(() => held.promise)
     const edit = Promise.resolve(command.run({ path: 'Test.canvas', operation: { type: 'delete-nodes', ids: ['a'] } }, { caller: 'plugin' })).catch((reason: unknown) => reason)
     const open = Promise.resolve(surface.restore!({ v: 1, path: 'Test.canvas' })).catch((reason: unknown) => reason)
     offCommands(); offSurfaces(); held.resolve(file)
     expect(String(await edit)).toContain('no longer registered'); expect(String(await open)).toContain('no longer registered')
-    expect(mock.api.vault.writeFileGuarded).not.toHaveBeenCalled(); expect(mock.api.workspace.openFile).not.toHaveBeenCalled()
+    expect(mock.api.realm.writeFileGuarded).not.toHaveBeenCalled(); expect(mock.api.workspace.openFile).not.toHaveBeenCalled()
   })
 
   it('routes UI undo to a reopened pane and refuses to overwrite intervening external work', async () => {
@@ -511,18 +511,18 @@ describe('command, Properties and undo lifetimes', () => {
     await act(async () => { await undo.undo() })
     expect(await screen.findByText('Original')).toBeTruthy()
     next.unmount()
-    await mock.api.vault.writeFile('Test.canvas', serializeCanvas(scene('External')))
+    await mock.api.realm.writeFile('Test.canvas', serializeCanvas(scene('External')))
     await expect(undo.redo!()).rejects.toThrow('newer work')
-    expect(parseCanvas(await mock.api.vault.readFile('Test.canvas')).nodes[0]).toMatchObject({ text: 'External' })
+    expect(parseCanvas(await mock.api.realm.readFile('Test.canvas')).nodes[0]).toMatchObject({ text: 'External' })
   })
 
   it('does not publish stale Properties results into a replacement target or allow saved inputs to write after revoke', async () => {
     const { mock, owner } = setup()
     const off = registerCanvasSurfaces(mock.api, owner)
     const metadata = mock.api.interop.extensions.providers(METADATA_PANEL_SEGMENT_V1)[0].extension
-    const file = await mock.api.vault.readFileBaseline('Test.canvas')
+    const file = await mock.api.realm.readFileBaseline('Test.canvas')
     const held = deferred<typeof file>()
-    vi.mocked(mock.api.vault.readFileBaseline).mockImplementationOnce(() => held.promise)
+    vi.mocked(mock.api.realm.readFileBaseline).mockImplementationOnce(() => held.promise)
     const subject = { pluginId: 'canvas', surface: 'main_workspace', view: { path: 'Test.canvas', nodeIds: ['a'] } } as const
     const properties = render(<>{metadata.render!({ kind: 'unsupported', subject, relPath: 'Test.canvas' })}</>)
     properties.rerender(<>{metadata.render!({ kind: 'unsupported', subject: { ...subject, view: { path: 'Other.canvas', nodeIds: ['a'] } }, relPath: 'Other.canvas' })}</>)
@@ -533,7 +533,7 @@ describe('command, Properties and undo lifetimes', () => {
     fireEvent.change(input, { target: { value: '22' } })
     off(); fireEvent.keyDown(input, { key: 'Escape' })
     await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('no longer registered'))
-    expect(mock.api.vault.writeFileGuarded).not.toHaveBeenCalled()
+    expect(mock.api.realm.writeFileGuarded).not.toHaveBeenCalled()
     properties.unmount()
   })
 })
@@ -557,19 +557,19 @@ describe('Canvas preview ownership', () => {
     return { mock, owner, props, intersect: (value: boolean) => intersect(value) }
   }
 
-  it('loads only visible rich previews and refreshes only relevant vault changes', async () => {
+  it('loads only visible rich previews and refreshes only relevant realm changes', async () => {
     const { mock, props, intersect } = preview()
-    const read = vi.spyOn(mock.api.vault, 'readFileBaseline')
+    const read = vi.spyOn(mock.api.realm, 'readFileBaseline')
     const mounted = render(<NodeView {...props} />)
     try {
       expect(read).not.toHaveBeenCalled()
       await act(async () => intersect(true))
       expect(await screen.findByText('Fern preview')).toBeTruthy()
       expect(read).toHaveBeenCalledOnce()
-      await act(async () => mock.emitVaultChanged({ changes: [{ relPath: 'Other.md', kind: 'change' }] }))
+      await act(async () => mock.emitRealmChanged({ changes: [{ relPath: 'Other.md', kind: 'change' }] }))
       expect(read).toHaveBeenCalledOnce()
       act(() => intersect(false))
-      await act(async () => mock.emitVaultChanged({ changes: [{ relPath: 'Fern.md', kind: 'change' }] }))
+      await act(async () => mock.emitRealmChanged({ changes: [{ relPath: 'Fern.md', kind: 'change' }] }))
       expect(read).toHaveBeenCalledOnce()
       mounted.rerender(<NodeView {...props} previewEnabled={false} />)
       await act(async () => intersect(true))
@@ -577,7 +577,7 @@ describe('Canvas preview ownership', () => {
       mounted.rerender(<NodeView {...props} />)
       await waitFor(() => expect(read).toHaveBeenCalledTimes(2))
       read.mockRejectedValueOnce(new Error('Preview read failed'))
-      await act(async () => mock.emitVaultChanged({ changes: [{ relPath: 'Fern.md', kind: 'change' }] }))
+      await act(async () => mock.emitRealmChanged({ changes: [{ relPath: 'Fern.md', kind: 'change' }] }))
       expect(await screen.findByRole('alert')).toHaveTextContent('Preview read failed')
     } finally { mounted.unmount(); vi.unstubAllGlobals(); vi.restoreAllMocks() }
   })
@@ -585,8 +585,8 @@ describe('Canvas preview ownership', () => {
   it('joins accepted preview reads after hiding the card and disposing its owner', async () => {
     const { mock, owner, props, intersect } = preview()
     const held = deferred<void>()
-    const readFile = mock.api.vault.readFileBaseline
-    const read = vi.spyOn(mock.api.vault, 'readFileBaseline').mockImplementationOnce(async path => { await held.promise; return readFile(path) })
+    const readFile = mock.api.realm.readFileBaseline
+    const read = vi.spyOn(mock.api.realm, 'readFileBaseline').mockImplementationOnce(async path => { await held.promise; return readFile(path) })
     const mounted = render(<NodeView {...props} />)
     try {
       act(() => intersect(true))
@@ -660,7 +660,7 @@ describe('exact Canvas mounted controls', () => {
     const writing = render(<input aria-label="Writing" defaultValue="Unsaved ä ö ü" />)
     try {
       await change(fixture, right, 'locked', true)
-      const other = canvasMountedSession(right, fixture.owner).get(), bytes = await fixture.mock.api.vault.readFile('Test.canvas')
+      const other = canvasMountedSession(right, fixture.owner).get(), bytes = await fixture.mock.api.realm.readFile('Test.canvas')
       const input = screen.getByLabelText('Writing') as HTMLInputElement
       input.focus(); input.setSelectionRange(2, 7)
       expect(fixture.provider.automation?.actions).toMatchObject({ 'select-node': { type: 'string', maxLength: 256 }, 'select-edge': { type: 'string', maxLength: 256 }, 'clear-selection': { type: 'button' }, 'viewport-x': { type: 'number' }, 'viewport-y': { type: 'number' }, 'fit-selection': { type: 'button' } })
@@ -681,8 +681,8 @@ describe('exact Canvas mounted controls', () => {
       expect(canvasMountedSession(left, fixture.owner).get()).toMatchObject({ nodeIds: [], edgeId: null })
       expect(fixture.provider.getSnapshot(fixture.context(left)).items['fit-selection'].disabled).toBe(true)
       expect(canvasMountedSession(right, fixture.owner).get()).toEqual(other)
-      expect(await fixture.mock.api.vault.readFile('Test.canvas')).toBe(bytes)
-      expect(fixture.mock.api.vault.writeFileGuarded).not.toHaveBeenCalled(); expect(push).not.toHaveBeenCalled()
+      expect(await fixture.mock.api.realm.readFile('Test.canvas')).toBe(bytes)
+      expect(fixture.mock.api.realm.writeFileGuarded).not.toHaveBeenCalled(); expect(push).not.toHaveBeenCalled()
       expect(document.activeElement).toBe(input); expect(input.selectionStart).toBe(2); expect(input.selectionEnd).toBe(7); expect(input.value).toBe('Unsaved ä ö ü')
     } finally { writing.unmount(); fixture.close() }
   })
@@ -701,7 +701,7 @@ describe('exact Canvas mounted controls', () => {
       fireEvent.click(within(root as HTMLElement).getByLabelText('Zoom to selection'))
       expect(canvasMountedSession(left, fixture.owner).get().viewport).toEqual({ x: 100, y: 250, zoom: 1 })
       expect(canvasMountedSession(right, fixture.owner).get().viewport).toEqual({ x: 0, y: 0, zoom: 1 })
-      expect(fixture.mock.api.vault.writeFileGuarded).not.toHaveBeenCalled()
+      expect(fixture.mock.api.realm.writeFileGuarded).not.toHaveBeenCalled()
     } finally { fixture.close(); vi.restoreAllMocks() }
   })
   it('controls an unfocused copy while the other card keeps its editor, selection and unsaved text', async () => {
@@ -719,8 +719,8 @@ describe('exact Canvas mounted controls', () => {
       expect(within(other).getByRole('textbox')).toBe(editor)
       expect(document.activeElement).toBe(editor); expect(editor.selectionStart).toBe(2); expect(editor.selectionEnd).toBe(8)
       expect(editor.value).toBe('Still typing ä ö ü'); expect(canvasMountedSession(right, fixture.owner).get()).toEqual(before)
-      expect(await fixture.mock.api.vault.readFile('Test.canvas')).toBe(serializeCanvas(connected))
-      expect(fixture.mock.api.vault.writeFileGuarded).not.toHaveBeenCalled(); expect(fixture.mock.undoActions).toHaveLength(0)
+      expect(await fixture.mock.api.realm.readFile('Test.canvas')).toBe(serializeCanvas(connected))
+      expect(fixture.mock.api.realm.writeFileGuarded).not.toHaveBeenCalled(); expect(fixture.mock.undoActions).toHaveLength(0)
     } finally { fixture.close() }
   })
   it('publishes current editability after a command settles and returns editable Properties beside a locked copy', async () => {
@@ -757,15 +757,15 @@ describe('exact Canvas mounted controls', () => {
       expect(document.activeElement).toBe(width)
       expect(within(lockedInspector.container).queryByLabelText('Width')).toBeNull()
       expect(canvasMountedSession(right, fixture.owner).get()).toMatchObject({ locked: true, readOnly: true, nodeIds: ['a'] })
-      expect(parseCanvas(await fixture.mock.api.vault.readFile('Test.canvas')).nodes[0]).toMatchObject({ x: 17, width: 200 })
-      expect(fixture.mock.api.vault.writeFileGuarded).toHaveBeenCalledOnce()
+      expect(parseCanvas(await fixture.mock.api.realm.readFile('Test.canvas')).nodes[0]).toMatchObject({ x: 17, width: 200 })
+      expect(fixture.mock.api.realm.writeFileGuarded).toHaveBeenCalledOnce()
       await act(async () => { fireEvent.change(width, { target: { value: '260' } }); fireEvent.blur(width) })
-      await waitFor(async () => expect(parseCanvas(await fixture.mock.api.vault.readFile('Test.canvas')).nodes[0]).toMatchObject({ x: 17, width: 260 }))
+      await waitFor(async () => expect(parseCanvas(await fixture.mock.api.realm.readFile('Test.canvas')).nodes[0]).toMatchObject({ x: 17, width: 260 }))
       await waitFor(() => expect(width).not.toBeDisabled())
       expect(await within(inspector.container).findByLabelText('Width')).toBe(width)
       expect(within(inspector.container).queryByRole('alert')).toBeNull()
-      expect(fixture.mock.api.vault.writeFileGuarded).toHaveBeenCalledTimes(2)
-      expect(parseCanvas(await fixture.mock.api.vault.readFile('Test.canvas'))).toEqual({ ...data, nodes: data.nodes.map(node => node.id === 'a' ? { ...node, x: 17, width: 260 } : node) })
+      expect(fixture.mock.api.realm.writeFileGuarded).toHaveBeenCalledTimes(2)
+      expect(parseCanvas(await fixture.mock.api.realm.readFile('Test.canvas'))).toEqual({ ...data, nodes: data.nodes.map(node => node.id === 'a' ? { ...node, x: 17, width: 260 } : node) })
     } finally { controller.abort(); held.resolve(); await pending?.catch(() => {}); off(); inspector?.unmount(); lockedInspector?.unmount(); fixture.close() }
   })
   it('leaves the last published controls equal to the settled state after a Properties command edit', async () => {
@@ -814,15 +814,15 @@ describe('exact Canvas mounted controls', () => {
       await act(async () => { held.resolve(); await pending })
       expect(within(inspector.container).getByLabelText('Width')).toBe(width)
       expect(document.activeElement).toBe(width); expect(width).toHaveValue(260)
-      expect(parseCanvas(await fixture.mock.api.vault.readFile('Test.canvas')).nodes[0].width).toBe(240)
+      expect(parseCanvas(await fixture.mock.api.realm.readFile('Test.canvas')).nodes[0].width).toBe(240)
       await act(async () => { fireEvent.blur(width) })
       await within(inspector.container).findByRole('alert')
       expect(within(inspector.container).getByLabelText('Width')).toBe(width)
       expect(width).toHaveValue(260); expect(width).not.toBeDisabled()
-      expect(parseCanvas(await fixture.mock.api.vault.readFile('Test.canvas')).nodes[0].width).toBe(240)
+      expect(parseCanvas(await fixture.mock.api.realm.readFile('Test.canvas')).nodes[0].width).toBe(240)
       expect(canvasMountedSession(right, fixture.owner).get()).toMatchObject({ locked: true, readOnly: true })
       expect(canvasMountedSession(right, fixture.owner).get().data.nodes[0].width).toBe(240)
-      expect(fixture.mock.api.vault.writeFileGuarded).toHaveBeenCalledOnce()
+      expect(fixture.mock.api.realm.writeFileGuarded).toHaveBeenCalledOnce()
     } finally { controller.abort(); held.resolve(); await pending?.catch(() => {}); inspector?.unmount(); fixture.close() }
   })
   it.each(['failure', 'cancellation'] as const)('restores current Properties editability after command %s and retains a focused draft and locked copy', async (outcome) => {
@@ -843,7 +843,7 @@ describe('exact Canvas mounted controls', () => {
       await act(async () => { width.focus(); fireEvent.change(width, { target: { value: '260' } }) })
       const command = fixture.mock.commands.find(entry => entry.id === 'properties-edit')!
       const input = command.input!.parse({ subject: { pluginId: 'canvas', surface: 'main_workspace', view: { path: 'Test.canvas', nodeIds: ['a'], edgeId: null }, mountedView: left }, expectedRevision: canvasMountedSession(left, fixture.owner).get().revision, values: { x: 17 } })
-      if (outcome === 'failure') vi.spyOn(fixture.mock.api.vault, 'writeFileGuarded').mockRejectedValueOnce(new Error('Save unavailable'))
+      if (outcome === 'failure') vi.spyOn(fixture.mock.api.realm, 'writeFileGuarded').mockRejectedValueOnce(new Error('Save unavailable'))
       await act(async () => { pending = Promise.resolve(command.run(input, { caller: 'agent', cancellation: controller.signal, validateBeforeRun: async () => { entered.resolve(); await held.promise; return true } })).catch(error => error); await entered.promise })
       expect(canvasDocument(fixture.owner, 'Test.canvas').get().busy).toBe(true)
       expect(within(inspector.container).queryByLabelText('Width')).toBe(width)
@@ -861,8 +861,8 @@ describe('exact Canvas mounted controls', () => {
       await expect(fixture.provider.invokeAutomation!(fixture.context(left), 'clear-selection', undefined, { expectedRevision: observed.revision!, validateBeforeEffect: async () => {} })).rejects.toMatchObject({ code: 'VIEWER_BUSY', outcome: 'not-applied' })
       expect(within(lockedInspector.container).queryByLabelText('Width')).toBeNull()
       expect(canvasMountedSession(right, fixture.owner).get()).toMatchObject({ locked: true, readOnly: true, nodeIds: ['a'] })
-      expect(await fixture.mock.api.vault.readFile('Test.canvas')).toBe(serializeCanvas(connected))
-      expect(fixture.mock.api.vault.writeFileGuarded).toHaveBeenCalledTimes(outcome === 'failure' ? 1 : 0)
+      expect(await fixture.mock.api.realm.readFile('Test.canvas')).toBe(serializeCanvas(connected))
+      expect(fixture.mock.api.realm.writeFileGuarded).toHaveBeenCalledTimes(outcome === 'failure' ? 1 : 0)
     } finally { controller.abort(); held.resolve(); await pending?.catch(() => {}); off(); inspector?.unmount(); lockedInspector?.unmount(); fixture.close() }
   })
   it('retains an exact Properties draft and blocks controls until its accepted save settles', async () => {
@@ -888,7 +888,7 @@ describe('exact Canvas mounted controls', () => {
       expect(canvasMountedSession(left, fixture.owner).get()).toMatchObject({ nodeIds: ['a'], viewport: { y: 0 } })
       await act(async () => { held.resolve(); await saving.mock.results[0].value })
       await waitFor(() => expect(width).not.toBeDisabled())
-      expect(parseCanvas(await fixture.mock.api.vault.readFile('Test.canvas')).nodes[0].width).toBe(260)
+      expect(parseCanvas(await fixture.mock.api.realm.readFile('Test.canvas')).nodes[0].width).toBe(260)
       expect(canvasMountedSession(right, fixture.owner).get().viewport.x).toBe(32)
       await change(fixture, left, 'select-node', 'b')
     } finally { inspector?.unmount(); fixture.close() }
@@ -908,7 +908,7 @@ describe('exact Canvas mounted controls', () => {
       expect(await pending).toMatchObject({ code: 'REVISION_CONFLICT', outcome: 'not-applied' })
       expect(canvasMountedSession(right, fixture.owner).get().nodeIds).toEqual([])
       await expect(fixture.provider.invokeAutomation!(fixture.context(left), 'fit-selection', undefined, { expectedRevision: fixture.provider.getSnapshot(fixture.context(left)).revision!, validateBeforeEffect: async () => {} })).rejects.toMatchObject({ code: 'CANVAS_TARGET_NOT_FOUND', outcome: 'not-applied' })
-      expect(fixture.mock.api.vault.writeFileGuarded).not.toHaveBeenCalled()
+      expect(fixture.mock.api.realm.writeFileGuarded).not.toHaveBeenCalled()
     } finally { fixture.close() }
   })
   it.each([['select-node', 'missing', 'CANVAS_TARGET_NOT_FOUND'], ['select-edge', 'missing', 'CANVAS_TARGET_NOT_FOUND'], ['select-node', '', 'INVALID_ARGUMENT'], ['select-edge', 'x'.repeat(257), 'INVALID_ARGUMENT'], ['viewport-x', Infinity, 'INVALID_ARGUMENT'], ['viewport-y', NaN, 'INVALID_ARGUMENT'], ['clear-selection', false, 'INVALID_ARGUMENT'], ['fit-selection', undefined, 'CANVAS_TARGET_NOT_FOUND']] as const)('refuses invalid %s input before authorization or effects', async (id, value, code) => {
@@ -917,7 +917,7 @@ describe('exact Canvas mounted controls', () => {
       const before = canvasMountedSession(left, fixture.owner).get(), validateBeforeEffect = vi.fn(async () => {})
       await expect(fixture.provider.invokeAutomation!(fixture.context(left), id, value, { expectedRevision: before.viewRevision!, validateBeforeEffect })).rejects.toMatchObject({ code, outcome: 'not-applied' })
       expect(validateBeforeEffect).not.toHaveBeenCalled(); expect(canvasMountedSession(left, fixture.owner).get()).toEqual(before)
-      expect(fixture.mock.api.vault.writeFileGuarded).not.toHaveBeenCalled()
+      expect(fixture.mock.api.realm.writeFileGuarded).not.toHaveBeenCalled()
     } finally { fixture.close() }
   })
   it.each([null, Object.assign(new Error('Uncertain host validation'), { outcomeUnknown: true })])('preserves a host validation refusal without changing the view', async rejection => {
@@ -927,7 +927,7 @@ describe('exact Canvas mounted controls', () => {
       const result = Promise.resolve(fixture.provider.invokeAutomation!(fixture.context(left), 'select-node', 'b', { expectedRevision: before.viewRevision!, validateBeforeEffect: async () => { throw rejection } })).catch(error => error)
       expect(await result).toMatchObject(rejection ? { outcomeUnknown: true } : { outcome: 'not-applied' })
       expect(canvasMountedSession(left, fixture.owner).get()).toEqual(before)
-      expect(fixture.mock.api.vault.writeFileGuarded).not.toHaveBeenCalled()
+      expect(fixture.mock.api.realm.writeFileGuarded).not.toHaveBeenCalled()
     } finally { fixture.close() }
   })
   it('refuses card edits, pointer gestures, dialogs and an accepted document commit without discarding their state', async () => {
@@ -948,7 +948,7 @@ describe('exact Canvas mounted controls', () => {
       fireEvent.pointerDown(root, { button: 0, pointerId: 21, clientX: 20, clientY: 20 })
       await refuse(); expect(canvasMountedSession(left, fixture.owner).get().controlsBlocked).toBe(true)
       fireEvent.pointerCancel(root, { pointerId: 21 })
-      await act(async () => { fireEvent.click(within(root as HTMLElement).getByLabelText('Drag to add note from vault')) })
+      await act(async () => { fireEvent.click(within(root as HTMLElement).getByLabelText('Drag to add note from realm')) })
       await refuse(); expect(within(root as HTMLElement).getByRole('dialog')).toBeTruthy()
       fireEvent.click(within(root as HTMLElement).getByLabelText('Close'))
       const data = canvasMountedSession(left, fixture.owner).get().data, held = deferred<void>(), entered = deferred<void>()
@@ -967,7 +967,7 @@ describe('exact Canvas mounted controls', () => {
       const root = fixture.mounted.container.querySelector('.canvas-root')!
       if (reason === 'editing') fireEvent.doubleClick(within(root as HTMLElement).getByText('Original'))
       if (reason === 'gesture') fireEvent.pointerDown(root, { button: 0, pointerId: 22, clientX: 20, clientY: 20 })
-      if (reason === 'modal') await act(async () => { fireEvent.click(within(root as HTMLElement).getByLabelText('Drag to add note from vault')) })
+      if (reason === 'modal') await act(async () => { fireEvent.click(within(root as HTMLElement).getByLabelText('Drag to add note from realm')) })
       if (reason === 'selection') act(() => canvasMountedSession(left, fixture.owner).restore({ nodeIds: ['a'] }))
       if (reason === 'pan') act(() => canvasMountedSession(left, fixture.owner).restore({ viewport: { x: 10, y: 20, zoom: 1 } }))
       if (reason === 'mount') fixture.close()
@@ -976,7 +976,7 @@ describe('exact Canvas mounted controls', () => {
       held.resolve()
       expect(await result).toMatchObject({ outcome: 'not-applied' })
       if (!['mount', 'provider', 'owner'].includes(reason)) expect(canvasMountedSession(left, fixture.owner).get().nodeIds).not.toEqual(['b'])
-      expect(fixture.mock.api.vault.writeFileGuarded).not.toHaveBeenCalled()
+      expect(fixture.mock.api.realm.writeFileGuarded).not.toHaveBeenCalled()
     } finally { fixture.close() }
   })
   it('changes only the observed copy and preserves shared unsaved content', async () => {
@@ -991,7 +991,7 @@ describe('exact Canvas mounted controls', () => {
       expect(canvasMountedSession(left, fixture.owner).get().viewport.zoom).toBe(1.5)
       expect(canvasMountedSession(right, fixture.owner).get().viewport.zoom).toBe(1)
       expect(canvasMountedSession(right, fixture.owner).get().data.nodes[0]).toMatchObject({ text: 'Unsaved shared ä ö ü' })
-      expect(fixture.mock.api.vault.writeFileGuarded).not.toHaveBeenCalled()
+      expect(fixture.mock.api.realm.writeFileGuarded).not.toHaveBeenCalled()
       await expect(fixture.provider.invokeAutomation!(fixture.context(left), 'zoom', 1, { expectedRevision: observed.revision!, validateBeforeEffect })).rejects.toThrow('changed')
       await expect(fixture.provider.invokeAutomation!(fixture.context({ ...left, generation: 2 }), 'zoom', 1, { expectedRevision: observed.revision!, validateBeforeEffect })).rejects.toThrow('exact Canvas')
     } finally { fixture.close() }
@@ -1051,12 +1051,12 @@ describe('exact Canvas mounted controls', () => {
       inspector.rerender(content(replacement))
       const restored = await within(inspector.container).findByLabelText('Width') as HTMLInputElement
       expect(restored).toHaveValue(260)
-      const registrations = vi.mocked(fixture.mock.api.vault.editors.register).mock.calls
+      const registrations = vi.mocked(fixture.mock.api.realm.editors.register).mock.calls
       expect(await registrations.find(([view]) => view.mountId === left.mountId)![1].getSnapshot()).toMatchObject({ dirty: true })
       expect(await registrations.find(([view]) => view.mountId === replacement.mountId)![1].getSnapshot()).toMatchObject({ dirty: true })
       expect(canvasMountedSession(right, fixture.owner).get()).toMatchObject({ nodeIds: ['b'], locked: true })
-      expect(fixture.mock.api.vault.writeFileGuarded).not.toHaveBeenCalled()
-      expect(await fixture.mock.api.vault.readFile('Test.canvas')).toBe(serializeCanvas(connected))
+      expect(fixture.mock.api.realm.writeFileGuarded).not.toHaveBeenCalled()
+      expect(await fixture.mock.api.realm.readFile('Test.canvas')).toBe(serializeCanvas(connected))
       expect(errors).not.toHaveBeenCalled()
     } finally { inspector?.unmount(); fixture.close(); errors.mockRestore() }
   })
@@ -1072,8 +1072,8 @@ describe('exact Canvas mounted controls', () => {
       catch (reason) { failure = reason; throw reason }
     })
     const dispatched = vi.spyOn(fixture.mock.api.commands, 'executeOwn')
-    const write = fixture.mock.api.vault.writeFileGuarded, mountedAtWrite: boolean[] = []
-    const writes = vi.spyOn(fixture.mock.api.vault, 'writeFileGuarded').mockImplementation((...args) => {
+    const write = fixture.mock.api.realm.writeFileGuarded, mountedAtWrite: boolean[] = []
+    const writes = vi.spyOn(fixture.mock.api.realm, 'writeFileGuarded').mockImplementation((...args) => {
       try { canvasMountedSession(left, fixture.owner); mountedAtWrite.push(true) } catch { mountedAtWrite.push(false) }
       return write(...args)
     })
@@ -1103,7 +1103,7 @@ describe('exact Canvas mounted controls', () => {
         const input = command.input!.parse({ subject: { pluginId: 'canvas', surface: 'main_workspace', view: { path: 'Test.canvas', nodeIds: ['a'], edgeId: null }, mountedView: left }, expectedRevision: session.get().revision, values: { width: 260 } })
         await act(async () => { await Promise.resolve(command.run(input, { caller: 'agent' })).catch(reason => { failure = reason }) })
       }
-      const source = await fixture.mock.api.vault.readFile('Test.canvas')
+      const source = await fixture.mock.api.realm.readFile('Test.canvas')
       expect(closed).toBe(true)
       expect({ mountedAtWrite, persistedWidth: parseCanvas(source).nodes[0].width, completed: failure === undefined }).toEqual({ mountedAtWrite: [], persistedWidth: connected.nodes[0].width, completed: false })
       expect(failure).toMatchObject({ outcome: 'not-applied' })
@@ -1119,7 +1119,7 @@ describe('exact Canvas mounted controls', () => {
         inspector!.rerender(metadata.render({ relPath: 'Test.canvas', kind: 'unsupported', mountedView: replacement }))
         expect(await within(inspector!.container).findByLabelText('Width')).toHaveValue(260)
         expect(writes).not.toHaveBeenCalled()
-        expect(await fixture.mock.api.vault.readFile('Test.canvas')).toBe(source)
+        expect(await fixture.mock.api.realm.readFile('Test.canvas')).toBe(source)
       }
     } finally { armed = false; reads.mockRestore(); writes.mockRestore(); dispatched.mockRestore(); admitted.mockRestore(); inspector?.unmount(); fixture.close() }
   })
@@ -1153,8 +1153,8 @@ describe('exact Canvas mounted controls', () => {
       await act(async () => { await Promise.resolve(command.run(input, { caller: 'agent', cancellation: cancellation.signal, validateBeforeRun: async () => { armed = true; return true } })).catch(reason => { failure = reason }) })
       expect(invalidated).toBe(true)
       expect(failure).toMatchObject({ outcome: 'not-applied' })
-      expect(fixture.mock.api.vault.writeFileGuarded).not.toHaveBeenCalled()
-      expect(await fixture.mock.api.vault.readFile('Test.canvas')).toBe(serializeCanvas(connected))
+      expect(fixture.mock.api.realm.writeFileGuarded).not.toHaveBeenCalled()
+      expect(await fixture.mock.api.realm.readFile('Test.canvas')).toBe(serializeCanvas(connected))
       expect(canvasMountedSession(right, fixture.owner).get()).toMatchObject({ viewport: rightBefore.viewport, nodeIds: rightBefore.nodeIds, locked: true })
     } finally { armed = false; reads.mockRestore(); fixture.close() }
   })
@@ -1184,8 +1184,8 @@ describe('exact Canvas mounted controls', () => {
       expect(within(inspector!.container).getByLabelText('Width')).toBe(width)
       expect(width).toHaveValue(320)
       expect(canvasMountedSession(right, fixture.owner).get().locked).toBe(true)
-      expect(fixture.mock.api.vault.writeFileGuarded).not.toHaveBeenCalled()
-      expect(await fixture.mock.api.vault.readFile('Test.canvas')).toBe(serializeCanvas(data))
+      expect(fixture.mock.api.realm.writeFileGuarded).not.toHaveBeenCalled()
+      expect(await fixture.mock.api.realm.readFile('Test.canvas')).toBe(serializeCanvas(data))
       expect(errors).not.toHaveBeenCalled()
     } finally { held.resolve(); refresh.mockRestore(); inspector?.unmount(); fixture.close(); errors.mockRestore() }
   })
@@ -1205,11 +1205,11 @@ describe('exact Canvas mounted controls', () => {
       const command = fixture.mock.commands.find(entry => entry.id === 'properties-edit')!
       const input = command.input!.parse({ subject: { pluginId: 'canvas', surface: 'main_workspace', view: { path: 'Test.canvas', nodeIds: ['a'], edgeId: null }, mountedView: left }, expectedRevision: canvasMountedSession(left, fixture.owner).get().revision, values: { x: 3 } })
       await act(async () => { expect(await command.run(input, { caller: 'agent', validateBeforeRun: async () => true })).toMatchObject({ value: { data: { nodes: [{ x: 3 }] } } }) })
-      expect(parseCanvas(await fixture.mock.api.vault.readFile('Test.canvas')).nodes[0].x).toBe(3)
+      expect(parseCanvas(await fixture.mock.api.realm.readFile('Test.canvas')).nodes[0].x).toBe(3)
       expect(canvasMountedSession(right, fixture.owner).get().data.nodes[0].x).toBe(3)
       const lockedInput = command.input!.parse({ subject: { pluginId: 'canvas', surface: 'main_workspace', view: { path: 'Test.canvas', nodeIds: ['a'], edgeId: null }, mountedView: right }, expectedRevision: canvasMountedSession(right, fixture.owner).get().revision, values: { x: 4 } })
       await expect(command.run(lockedInput, { caller: 'agent', validateBeforeRun: async () => true })).rejects.toThrow()
-      expect(parseCanvas(await fixture.mock.api.vault.readFile('Test.canvas')).nodes[0].x).toBe(3)
+      expect(parseCanvas(await fixture.mock.api.realm.readFile('Test.canvas')).nodes[0].x).toBe(3)
       expect(() => command.input!.parse({ subject: { pluginId: 'canvas', surface: 'main_workspace', view: { path: 'Test.canvas' } }, expectedRevision: canvasMountedSession(left, fixture.owner).get().revision, values: { x: 3 } })).toThrow('exact mounted')
     } finally { fixture.close() }
   })
@@ -1239,10 +1239,10 @@ describe('exact Canvas mounted controls', () => {
       await change(fixture, right, 'locked', true)
       const other = canvasMountedSession(right, fixture.owner).get()
       await action(fixture, id as string)
-      const saved = parseCanvas(await fixture.mock.api.vault.readFile('Test.canvas'))
+      const saved = parseCanvas(await fixture.mock.api.realm.readFile('Test.canvas'))
       expect(saved.nodes.find(node => node.id === target)).toMatchObject(expected as Record<string, unknown>)
       expect(saved.nodes[0].nativeExtra).toEqual({ retained: true }); expect(saved.extra).toEqual(layoutScene.extra); expect(saved.edges).toEqual(layoutScene.edges)
-      expect(fixture.mock.api.vault.editors.save).toHaveBeenCalledOnce()
+      expect(fixture.mock.api.realm.editors.save).toHaveBeenCalledOnce()
       expect(canvasMountedSession(right, fixture.owner).get()).toMatchObject({ viewport: other.viewport, nodeIds: other.nodeIds, locked: true })
     } finally { fixture.close() }
   })
@@ -1251,14 +1251,14 @@ describe('exact Canvas mounted controls', () => {
     try {
       act(() => canvasMountedSession(left, fixture.owner).restore({ nodeIds: ['a', 'b'] }))
       await action(fixture, 'group-selection')
-      const grouped = parseCanvas(await fixture.mock.api.vault.readFile('Test.canvas'))
+      const grouped = parseCanvas(await fixture.mock.api.realm.readFile('Test.canvas'))
       expect(grouped.nodes[0]).toMatchObject({ type: 'group', x: -20, y: -20, width: 270, height: 100 })
       expect(grouped.nodes.slice(1).map(node => node.id)).toEqual(['a', 'b', 'c'])
       const session = canvasMountedSession(left, fixture.owner)
       await action(fixture, 'history-undo', { expectedHistoryRevision: session.history!().revision })
-      expect(parseCanvas(await fixture.mock.api.vault.readFile('Test.canvas'))).toEqual(layoutScene)
+      expect(parseCanvas(await fixture.mock.api.realm.readFile('Test.canvas'))).toEqual(layoutScene)
       await action(fixture, 'history-redo', { expectedHistoryRevision: session.history!().revision })
-      expect(parseCanvas(await fixture.mock.api.vault.readFile('Test.canvas'))).toEqual(grouped)
+      expect(parseCanvas(await fixture.mock.api.realm.readFile('Test.canvas'))).toEqual(grouped)
       await expect(action(fixture, 'history-undo', { expectedHistoryRevision: 'stale' })).rejects.toMatchObject({ code: 'REVISION_CONFLICT' })
     } finally { fixture.close() }
   })
@@ -1269,7 +1269,7 @@ describe('exact Canvas mounted controls', () => {
       const edgeAction = id.startsWith('line-'), background = id.startsWith('background-')
       act(() => canvasMountedSession(left, fixture.owner).restore({ nodeIds: edgeAction ? [] : [background ? 'group' : 'a'], edgeId: edgeAction ? 'ab' : null }))
       await action(fixture, id)
-      const saved = parseCanvas(await fixture.mock.api.vault.readFile('Test.canvas'))
+      const saved = parseCanvas(await fixture.mock.api.realm.readFile('Test.canvas'))
       if (id === 'order-front') expect(saved.nodes.at(-1)!.id).toBe('a')
       if (id === 'order-back') expect(saved.nodes[0].id).toBe('a')
       if (id === 'color-remove') expect(saved.nodes.find(node => node.id === 'a')).not.toHaveProperty('color')
@@ -1284,7 +1284,7 @@ describe('exact Canvas mounted controls', () => {
     const fixture = await controls(layoutScene), writing = render(<input aria-label="Independent editor" defaultValue="Draft" />)
     try {
       const input = screen.getByLabelText('Independent editor') as HTMLInputElement; input.focus(); input.setSelectionRange(1, 3)
-      const other = canvasMountedSession(right, fixture.owner).get(), bytes = await fixture.mock.api.vault.readFile('Test.canvas')
+      const other = canvasMountedSession(right, fixture.owner).get(), bytes = await fixture.mock.api.realm.readFile('Test.canvas')
       await action(fixture, 'selection-set', { targetNodeIds: ['a', 'c'], targetEdgeId: null })
       expect(canvasMountedSession(left, fixture.owner).get().nodeIds).toEqual(['a', 'c'])
       await action(fixture, 'viewport-set', { viewport: { x: -21, y: 0, zoom: 2 } })
@@ -1292,9 +1292,9 @@ describe('exact Canvas mounted controls', () => {
       await action(fixture, 'selection-all')
       expect(canvasMountedSession(left, fixture.owner).get().nodeIds).toEqual(['a', 'b', 'c'])
       expect(canvasMountedSession(right, fixture.owner).get()).toEqual(other)
-      expect(await fixture.mock.api.vault.readFile('Test.canvas')).toBe(bytes)
+      expect(await fixture.mock.api.realm.readFile('Test.canvas')).toBe(bytes)
       expect(document.activeElement).toBe(input); expect([input.selectionStart, input.selectionEnd]).toEqual([1, 3])
-      expect(fixture.mock.api.vault.editors.save).not.toHaveBeenCalled()
+      expect(fixture.mock.api.realm.editors.save).not.toHaveBeenCalled()
     } finally { writing.unmount(); fixture.close() }
   })
   it.each(['stale', 'denied', 'cancelled', 'locked', 'late-selection', 'late-viewport'])('refuses %s selection edits before any disk effect', async reason => {
@@ -1306,7 +1306,7 @@ describe('exact Canvas mounted controls', () => {
       const input = command.input!.parse({ mountedView: left, nodeIds: state.nodeIds, edgeId: state.edgeId, expectedRevision: state.revision, expectedViewRevision: reason === 'stale' ? 'stale' : state.viewRevision })
       const cancellation = new AbortController(); if (reason === 'cancelled') cancellation.abort()
       await act(async () => { await expect(command.run(input, { caller: 'agent', cancellation: cancellation.signal, validateBeforeRun: async () => { if (reason === 'late-selection') canvasMountedSession(left, fixture.owner).restore({ nodeIds: ['b'] }); if (reason === 'late-viewport') canvasMountedSession(left, fixture.owner).restore({ viewport: { x: 9, y: 0, zoom: 1 } }); return reason !== 'denied' } })).rejects.toMatchObject({ outcome: 'not-applied' }) })
-      expect(await fixture.mock.api.vault.readFile('Test.canvas')).toBe(serializeCanvas(layoutScene)); expect(fixture.mock.api.vault.editors.save).not.toHaveBeenCalled()
+      expect(await fixture.mock.api.realm.readFile('Test.canvas')).toBe(serializeCanvas(layoutScene)); expect(fixture.mock.api.realm.editors.save).not.toHaveBeenCalled()
     } finally { fixture.close() }
   })
   it('exposes the actual raw Width draft through inspect/patch/discard/apply with exact revisions', async () => {
@@ -1322,12 +1322,12 @@ describe('exact Canvas mounted controls', () => {
       expect(first).toMatchObject({ value: '100', dirty: false })
       const patched = await raw('patch', { expectedDraftRevision: first.revision, value: '260' })
       expect(width).toHaveValue(260); expect(patched.value).toMatchObject({ dirty: true, value: '260' })
-      expect(await fixture.mock.api.vault.readFile('Test.canvas')).toBe(serializeCanvas(layoutScene))
+      expect(await fixture.mock.api.realm.readFile('Test.canvas')).toBe(serializeCanvas(layoutScene))
       await expect(raw('discard', { expectedDraftRevision: first.revision })).rejects.toMatchObject({ code: 'REVISION_CONFLICT' })
       await raw('discard', { expectedDraftRevision: patched.value.revision }); expect(width).toHaveValue(100)
       const next = await raw('inspect'), pending = await raw('patch', { expectedDraftRevision: next.revision, value: '260' })
       await raw('apply', { expectedDraftRevision: pending.value.revision })
-      expect(parseCanvas(await fixture.mock.api.vault.readFile('Test.canvas')).nodes[0]).toMatchObject({ width: 260, nativeExtra: { retained: true } })
+      expect(parseCanvas(await fixture.mock.api.realm.readFile('Test.canvas')).nodes[0]).toMatchObject({ width: 260, nativeExtra: { retained: true } })
       expect(await raw('inspect')).toMatchObject({ value: '260', dirty: false })
     } finally { inspector?.unmount(); fixture.close() }
   })
@@ -1342,14 +1342,14 @@ describe('exact Canvas mounted controls', () => {
       act(() => canvasMountedSession(left, fixture.owner).restore({ nodeIds: ['a', 'b'] }))
       await action(fixture, 'clipboard-copy')
       expect(parseCanvas(clipboard).nodes.map(node => node.id)).toEqual(['a', 'b']); expect(parseCanvas(clipboard).edges.map(edge => edge.id)).toEqual(['ab'])
-      expect(await fixture.mock.api.vault.readFile('Test.canvas')).toBe(serializeCanvas(layoutScene))
+      expect(await fixture.mock.api.realm.readFile('Test.canvas')).toBe(serializeCanvas(layoutScene))
       await action(fixture, 'clipboard-paste', { at: { x: 600, y: 400 } })
-      const saved = parseCanvas(await fixture.mock.api.vault.readFile('Test.canvas')), pasted = saved.nodes.slice(3)
+      const saved = parseCanvas(await fixture.mock.api.realm.readFile('Test.canvas')), pasted = saved.nodes.slice(3)
       expect(pasted).toHaveLength(2); expect(pasted.map(node => node.id)).not.toEqual(['a', 'b'])
       expect(saved.edges[1]).toMatchObject({ fromNode: pasted[0].id, toNode: pasted[1].id })
       expect(pasted[0]).toMatchObject({ x: 485, y: 370, nativeExtra: { retained: true } })
       await action(fixture, 'clipboard-cut')
-      expect(parseCanvas(await fixture.mock.api.vault.readFile('Test.canvas'))).toEqual(layoutScene)
+      expect(parseCanvas(await fixture.mock.api.realm.readFile('Test.canvas'))).toEqual(layoutScene)
       expect(parseCanvas(clipboard).nodes).toEqual(pasted)
       expect(native.writeText).not.toHaveBeenCalled(); expect(native.readText).not.toHaveBeenCalled()
     } finally { delete (navigator as { clipboard?: unknown }).clipboard; fixture.close() }
@@ -1367,7 +1367,7 @@ describe('exact Canvas mounted controls', () => {
       ui.readClipboardText = vi.fn(async () => { throw Object.assign(new Error('Unfocused'), { code: 'CLIPBOARD_UNAVAILABLE', outcome: 'not-applied' }) })
       await expect(action(fixture, 'clipboard-cut')).rejects.toMatchObject({ code: 'CLIPBOARD_UNAVAILABLE', outcome: 'not-applied' })
       await expect(action(fixture, 'clipboard-paste', { at: { x: 0, y: 0 } })).rejects.toMatchObject({ code: 'CLIPBOARD_UNAVAILABLE', outcome: 'not-applied' })
-      expect(await fixture.mock.api.vault.readFile('Test.canvas')).toBe(serializeCanvas(layoutScene))
+      expect(await fixture.mock.api.realm.readFile('Test.canvas')).toBe(serializeCanvas(layoutScene))
       expect(canvasMountedSession(left, fixture.owner).get().nodeIds).toEqual(['a'])
     } finally { delete (navigator as { clipboard?: unknown }).clipboard; fixture.close() }
   })
@@ -1377,24 +1377,24 @@ describe('exact Canvas mounted controls', () => {
     try {
       act(() => canvasMountedSession(left, fixture.owner).restore({ nodeIds: ['a'] }))
       await expect(action(fixture, 'clipboard-cut')).rejects.toMatchObject({ outcome: 'unknown', outcomeUnknown: true })
-      expect(await fixture.mock.api.vault.readFile('Test.canvas')).toBe(serializeCanvas(layoutScene))
+      expect(await fixture.mock.api.realm.readFile('Test.canvas')).toBe(serializeCanvas(layoutScene))
     } finally { delete (navigator as { clipboard?: unknown }).clipboard; fixture.close() }
   })
   it('binds Base menu choices to the actual referenced revision and rejects stale/missing views', async () => {
     const data: CanvasData = { nodes: [{ id: 'a', type: 'file', file: 'Gallery.base', x: 0, y: 0, width: 200, height: 100, opaque: true }], edges: [] }
     const fixture = await controls(data)
     try {
-      await fixture.mock.api.vault.writeFile('Gallery.base', 'views:\n  - name: Forest\n  - name: Coast\n')
+      await fixture.mock.api.realm.writeFile('Gallery.base', 'views:\n  - name: Forest\n  - name: Coast\n')
       act(() => canvasMountedSession(left, fixture.owner).restore({ nodeIds: ['a'] }))
       const command = fixture.mock.commands.find(entry => entry.id === 'base-view-inspect')!, input = command.input!.parse({ mountedView: left })
       const observed = await command.run(input, { caller: 'agent' }) as { revision: string; names: string[] }
       expect(observed.names).toEqual(['Forest', 'Coast'])
       await action(fixture, 'base-view-select', { expectedBaseRevision: observed.revision, name: 'Forest' })
-      expect(parseCanvas(await fixture.mock.api.vault.readFile('Test.canvas')).nodes[0]).toMatchObject({ subpath: '#Forest', opaque: true })
+      expect(parseCanvas(await fixture.mock.api.realm.readFile('Test.canvas')).nodes[0]).toMatchObject({ subpath: '#Forest', opaque: true })
       await action(fixture, 'base-view-default', { expectedBaseRevision: observed.revision })
-      expect(parseCanvas(await fixture.mock.api.vault.readFile('Test.canvas')).nodes[0]).not.toHaveProperty('subpath')
+      expect(parseCanvas(await fixture.mock.api.realm.readFile('Test.canvas')).nodes[0]).not.toHaveProperty('subpath')
       await expect(action(fixture, 'base-view-select', { expectedBaseRevision: observed.revision, name: 'Missing' })).rejects.toMatchObject({ code: 'TARGET_NOT_FOUND' })
-      await fixture.mock.api.vault.writeFile('Gallery.base', 'views:\n  - name: Meadow\n')
+      await fixture.mock.api.realm.writeFile('Gallery.base', 'views:\n  - name: Meadow\n')
       await expect(action(fixture, 'base-view-select', { expectedBaseRevision: observed.revision, name: 'Forest' })).rejects.toMatchObject({ code: 'REVISION_CONFLICT' })
     } finally { fixture.close() }
   })
@@ -1404,9 +1404,9 @@ describe('exact Canvas mounted controls', () => {
       act(() => canvasMountedSession(left, fixture.owner).restore({ nodeIds: ['a'] }))
       const command = fixture.mock.commands.find(entry => entry.id === 'convert-text-to-note-observe')!, observed = await command.run(command.input!.parse({ destination: 'Meadow.md' }), { caller: 'agent' }) as { revision: string }
       await action(fixture, 'convert-text-to-note', { destination: 'Meadow.md', expectedDestinationRevision: observed.revision })
-      expect(await fixture.mock.api.vault.readFile('Meadow.md')).toBe('Meadow')
-      expect(parseCanvas(await fixture.mock.api.vault.readFile('Test.canvas')).nodes[0]).toMatchObject({ id: 'a', type: 'file', file: 'Meadow.md', color: '1', x: 0, y: 0, width: 100, height: 60, nativeExtra: { retained: true } })
-      expect(parseCanvas(await fixture.mock.api.vault.readFile('Test.canvas')).nodes[0]).not.toHaveProperty('text')
+      expect(await fixture.mock.api.realm.readFile('Meadow.md')).toBe('Meadow')
+      expect(parseCanvas(await fixture.mock.api.realm.readFile('Test.canvas')).nodes[0]).toMatchObject({ id: 'a', type: 'file', file: 'Meadow.md', color: '1', x: 0, y: 0, width: 100, height: 60, nativeExtra: { retained: true } })
+      expect(parseCanvas(await fixture.mock.api.realm.readFile('Test.canvas')).nodes[0]).not.toHaveProperty('text')
     } finally { fixture.close() }
   })
   it('reloads an explicitly observed dirty draft and refuses stale draft/disk revisions', async () => {
@@ -1415,12 +1415,12 @@ describe('exact Canvas mounted controls', () => {
       const document = canvasDocument(fixture.owner, 'Test.canvas')
       await act(async () => { document.setData(scene('Retained')); document.schedule(document.get().data) })
       const command = fixture.mock.commands.find(entry => entry.id === 'disk-inspect')!, observed = await command.run(command.input!.parse({ mountedView: left }), { caller: 'agent' }) as { draftRevision: string; diskRevision: string }
-      expect(await fixture.mock.api.vault.readFile('Test.canvas')).toBe(serializeCanvas(layoutScene))
+      expect(await fixture.mock.api.realm.readFile('Test.canvas')).toBe(serializeCanvas(layoutScene))
       await expect(action(fixture, 'reload-disk', { expectedDraftRevision: 'stale', expectedDiskRevision: observed.diskRevision, discardDraft: true })).rejects.toMatchObject({ code: 'REVISION_CONFLICT' })
       await action(fixture, 'reload-disk', { expectedDraftRevision: observed.draftRevision, expectedDiskRevision: observed.diskRevision, discardDraft: true })
       expect(canvasMountedSession(left, fixture.owner).get().data).toEqual(layoutScene)
-      expect(await fixture.mock.api.vault.readFile('Test.canvas')).toBe(serializeCanvas(layoutScene))
-      expect(fixture.mock.api.vault.editors.save).not.toHaveBeenCalled()
+      expect(await fixture.mock.api.realm.readFile('Test.canvas')).toBe(serializeCanvas(layoutScene))
+      expect(fixture.mock.api.realm.editors.save).not.toHaveBeenCalled()
     } finally { fixture.close() }
   })
 
@@ -1431,8 +1431,8 @@ describe('exact Canvas mounted controls', () => {
       const command = fixture.mock.commands.find(entry => entry.id === 'convert-text-to-note-observe')!, observed = await command.run(command.input!.parse({ destination: 'Meadow.md' }), { caller: 'agent' }) as { revision: string }
       let checks = 0
       await expect(action(fixture, 'convert-text-to-note', { destination: 'Meadow.md', expectedDestinationRevision: observed.revision }, { validateBeforeRun: async () => ++checks < 3 })).rejects.toMatchObject({ outcome: 'unknown', outcomeUnknown: true })
-      expect(await fixture.mock.api.vault.readFile('Meadow.md')).toBe('Meadow')
-      expect(await fixture.mock.api.vault.readFile('Test.canvas')).toBe(serializeCanvas(layoutScene))
+      expect(await fixture.mock.api.realm.readFile('Meadow.md')).toBe('Meadow')
+      expect(await fixture.mock.api.realm.readFile('Test.canvas')).toBe(serializeCanvas(layoutScene))
     } finally { fixture.close() }
   })
   it('classifies a refused save as definitely not applied only while the disk baseline is unchanged', async () => {
@@ -1440,29 +1440,29 @@ describe('exact Canvas mounted controls', () => {
     try {
       const document = canvasDocument(fixture.owner, 'Test.canvas'), inspect = fixture.mock.commands.find(entry => entry.id === 'disk-inspect')!
       const state = async () => await inspect.run(inspect.input!.parse({ mountedView: left }), { caller: 'agent' }) as { uncertain: boolean; dirty: boolean; error: string }
-      vi.mocked(fixture.mock.api.vault.writeFileGuarded).mockResolvedValueOnce({ ok: false, reason: 'conflict', current: null })
+      vi.mocked(fixture.mock.api.realm.writeFileGuarded).mockResolvedValueOnce({ ok: false, reason: 'conflict', current: null })
       await act(async () => { document.setData(scene('Conflict'), left); await expect(document.flush(document.get().data, true, left)).rejects.toMatchObject({ code: 'REVISION_CONFLICT', outcome: 'not-applied' }) })
-      vi.mocked(fixture.mock.api.vault.writeFileGuarded).mockResolvedValueOnce({ ok: false, reason: 'error' })
+      vi.mocked(fixture.mock.api.realm.writeFileGuarded).mockResolvedValueOnce({ ok: false, reason: 'error' })
       await act(async () => { await expect(document.flush(document.get().data, true, left)).rejects.toMatchObject({ code: 'WRITE_FAILED', outcome: 'not-applied' }) })
       expect(await state()).toMatchObject({ uncertain: false, dirty: true })
-      expect(await fixture.mock.api.vault.readFile('Test.canvas')).toBe(serializeCanvas(layoutScene))
-      vi.mocked(fixture.mock.api.vault.writeFileGuarded).mockImplementationOnce(async (path, text) => { await fixture.mock.api.vault.writeFile(path, text); return { ok: false, reason: 'error' } })
+      expect(await fixture.mock.api.realm.readFile('Test.canvas')).toBe(serializeCanvas(layoutScene))
+      vi.mocked(fixture.mock.api.realm.writeFileGuarded).mockImplementationOnce(async (path, text) => { await fixture.mock.api.realm.writeFile(path, text); return { ok: false, reason: 'error' } })
       await act(async () => { await expect(document.flush(document.get().data, true, left)).rejects.toMatchObject({ code: 'OUTCOME_UNKNOWN', outcome: 'unknown', outcomeUnknown: true }) })
       expect(await state()).toMatchObject({ uncertain: true, dirty: true })
-      const calls = vi.mocked(fixture.mock.api.vault.writeFileGuarded).mock.calls.length
+      const calls = vi.mocked(fixture.mock.api.realm.writeFileGuarded).mock.calls.length
       await act(async () => { await expect(document.flush(document.get().data, true, left)).rejects.toThrow() })
-      expect(vi.mocked(fixture.mock.api.vault.writeFileGuarded).mock.calls).toHaveLength(calls)
+      expect(vi.mocked(fixture.mock.api.realm.writeFileGuarded).mock.calls).toHaveLength(calls)
     } finally { fixture.close() }
   })
   it('retries the exact retained draft after a known refused save, binding its current disk/draft revisions', async () => {
     const fixture = await controls(layoutScene)
     try {
       const document = canvasDocument(fixture.owner, 'Test.canvas')
-      vi.mocked(fixture.mock.api.vault.writeFileGuarded).mockResolvedValueOnce({ ok: false, reason: 'error' })
+      vi.mocked(fixture.mock.api.realm.writeFileGuarded).mockResolvedValueOnce({ ok: false, reason: 'error' })
       await act(async () => { document.setData(scene('Retry'), left); await expect(document.flush(document.get().data, true, left)).rejects.toThrow() })
       const command = fixture.mock.commands.find(entry => entry.id === 'disk-inspect')!, observed = await command.run(command.input!.parse({ mountedView: left }), { caller: 'agent' }) as { draftRevision: string; diskRevision: string }
       await action(fixture, 'retry-save', { expectedDraftRevision: observed.draftRevision, expectedDiskRevision: observed.diskRevision })
-      expect(parseCanvas(await fixture.mock.api.vault.readFile('Test.canvas')).nodes[0]).toMatchObject({ text: 'Retry' })
+      expect(parseCanvas(await fixture.mock.api.realm.readFile('Test.canvas')).nodes[0]).toMatchObject({ text: 'Retry' })
       expect((await command.run(command.input!.parse({ mountedView: left }), { caller: 'agent' })) as { dirty: boolean }).toMatchObject({ dirty: false })
     } finally { fixture.close() }
   })
@@ -1481,7 +1481,7 @@ describe('exact Canvas mounted controls', () => {
       const initial = await run('inspect'), patched = await run('patch', { expectedDraftRevision: initial.revision, value: draft })
       expect(input).toHaveValue(typeof expected === 'number' ? expected : draft)
       await run('apply', { expectedDraftRevision: patched.value.revision })
-      const saved = parseCanvas(await fixture.mock.api.vault.readFile('Test.canvas'))
+      const saved = parseCanvas(await fixture.mock.api.realm.readFile('Test.canvas'))
       expect((edgeTarget ? saved.edges[0] : saved.nodes[0])[field]).toBe(expected)
       expect(saved.nodes[0].retained).toBe(false); expect(saved.edges[0].retained).toEqual([])
     } finally { inspector?.unmount(); fixture.close() }
@@ -1492,7 +1492,7 @@ describe('exact Canvas mounted controls', () => {
     try {
       act(() => canvasMountedSession(left, fixture.owner).restore({ nodeIds: ['group'] }))
       await action(fixture, 'align-right')
-      const saved = parseCanvas(await fixture.mock.api.vault.readFile('Test.canvas'))
+      const saved = parseCanvas(await fixture.mock.api.realm.readFile('Test.canvas'))
       expect(saved.nodes.find(node => node.id === 'a')).toMatchObject({ x: 160 })
       expect(saved.nodes.find(node => node.id === 'b')).toMatchObject({ x: 180 })
       expect(saved.nodes.find(node => node.id === 'c')).toEqual(layoutScene.nodes[2])
@@ -1507,8 +1507,8 @@ describe('exact Canvas mounted controls', () => {
       const history = canvasMountedSession(left, fixture.owner).history!(), push = vi.spyOn(fixture.mock.api.undo, 'push')
       await action(fixture, 'order-back')
       expect(canvasMountedSession(left, fixture.owner).history!()).toEqual(history)
-      expect(fixture.mock.api.vault.editors.save).not.toHaveBeenCalled(); expect(push).not.toHaveBeenCalled()
-      expect(await fixture.mock.api.vault.readFile('Test.canvas')).toBe(serializeCanvas(layoutScene))
+      expect(fixture.mock.api.realm.editors.save).not.toHaveBeenCalled(); expect(push).not.toHaveBeenCalled()
+      expect(await fixture.mock.api.realm.readFile('Test.canvas')).toBe(serializeCanvas(layoutScene))
     } finally { fixture.close() }
   })
 
