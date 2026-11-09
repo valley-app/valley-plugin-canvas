@@ -167,5 +167,6 @@
   "canvas.control.clearSelection": "清除选择",
   "canvas.control.viewportX": "水平位置",
   "canvas.control.viewportY": "垂直位置",
-  "canvas.error.viewBusy": "更改视图控件前，请完成当前画布编辑、手势操作或对话框。"
+  "canvas.error.viewBusy": "更改视图控件前，请完成当前画布编辑、手势操作或对话框。",
+  "menu.newCanvas": "新建画布"
 }

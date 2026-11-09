@@ -167,5 +167,6 @@
   "canvas.control.clearSelection": "Clear selection",
   "canvas.control.viewportX": "Horizontal position",
   "canvas.control.viewportY": "Vertical position",
-  "canvas.error.viewBusy": "Finish the current Canvas edit, gesture or dialog before changing view controls."
+  "canvas.error.viewBusy": "Finish the current Canvas edit, gesture or dialog before changing view controls.",
+  "menu.newCanvas": "New Canvas"
 }

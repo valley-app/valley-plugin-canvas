@@ -167,5 +167,6 @@
   "canvas.control.clearSelection": "Borrar selección",
   "canvas.control.viewportX": "Posición horizontal",
   "canvas.control.viewportY": "Posición vertical",
-  "canvas.error.viewBusy": "Finaliza la edición, el gesto o el diálogo actual del lienzo antes de cambiar los controles de vista."
+  "canvas.error.viewBusy": "Finaliza la edición, el gesto o el diálogo actual del lienzo antes de cambiar los controles de vista.",
+  "menu.newCanvas": "Nuevo lienzo"
 }

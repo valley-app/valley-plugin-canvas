@@ -167,5 +167,6 @@
   "canvas.control.clearSelection": "Effacer la sélection",
   "canvas.control.viewportX": "Position horizontale",
   "canvas.control.viewportY": "Position verticale",
-  "canvas.error.viewBusy": "Terminez la modification, le geste ou la boîte de dialogue du canevas avant de changer les commandes de vue."
+  "canvas.error.viewBusy": "Terminez la modification, le geste ou la boîte de dialogue du canevas avant de changer les commandes de vue.",
+  "menu.newCanvas": "Nouveau canevas"
 }

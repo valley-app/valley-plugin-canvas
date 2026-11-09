@@ -167,5 +167,6 @@
   "canvas.control.clearSelection": "Auswahl aufheben",
   "canvas.control.viewportX": "Horizontale Position",
   "canvas.control.viewportY": "Vertikale Position",
-  "canvas.error.viewBusy": "Beende die aktuelle Canvas-Bearbeitung, Geste oder den Dialog, bevor du die Ansichtssteuerung änderst."
+  "canvas.error.viewBusy": "Beende die aktuelle Canvas-Bearbeitung, Geste oder den Dialog, bevor du die Ansichtssteuerung änderst.",
+  "menu.newCanvas": "Neues Canvas"
 }
