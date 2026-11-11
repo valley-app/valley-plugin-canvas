@@ -619,7 +619,7 @@ const CanvasEditor = ({ relPath, owner, mountedView }: { relPath: string; owner:
       items.push({ type: 'separator' })
     }
     if (node.type === 'file' && node.file) {
-      items.push({ id: 'open', label: uiText('canvas.menu.open'), icon: <OpenIcon />, onSelect: () => api.workspace.openFile(node.file) })
+      items.push({ id: 'open', label: uiText('canvas.menu.open'), icon: <OpenIcon />, onSelect: (context?: { newTab?: boolean }) => context?.newTab ? api.workspace.openFile(node.file, undefined, { newTab: true }) : api.workspace.openFile(node.file) })
       items.push({ id: 'open-tab', label: uiText('canvas.menu.openInNewTab'), icon: <OpenIcon />, onSelect: () => api.workspace.openFile(node.file, undefined, { newTab: true }) })
       if (classifyFilePath(node.file) === 'base') {
         const views = await baseViews(node.file)
