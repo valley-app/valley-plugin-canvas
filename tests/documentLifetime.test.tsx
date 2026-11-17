@@ -274,7 +274,7 @@ describe('captured Canvas document authority', () => {
     let commit!: Promise<void>
     act(() => {
       commit = canvasDocument(owner, 'Test.canvas').commit(scene('Command'), serializeCanvas(original))
-      if ('onSelect' in add) void add.onSelect?.()
+      if ('onSelect' in add) void add.onSelect?.({ newTab: false })
     })
     expect(mock.undoActions).toHaveLength(0)
     await act(async () => { held.resolve(); await commit })

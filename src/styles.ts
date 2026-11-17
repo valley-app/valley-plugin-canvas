@@ -396,7 +396,6 @@ textarea.canvas-path-label { resize: none; outline: none; min-width: calc(4em * 
   transform: rotate(-45deg);
 }
 .canvas-color-picker-custom:not(.is-active) { background: conic-gradient(var(--color-red), var(--color-yellow), var(--color-green), var(--color-cyan), var(--color-purple), var(--color-red)); }
-.canvas-color-picker-custom input[type='color'] { position: absolute; inset: -4px; width: calc(100% + 8px); height: calc(100% + 8px); opacity: 0; cursor: pointer; padding: 0; border: 0; }
 
 /* ── Messages ──────────────────────────────────────────────────────────────── */
 .canvas-banner {

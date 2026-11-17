@@ -1,4 +1,5 @@
-import { React, type CanvasOwner } from './runtime'
+import { React, api, type CanvasOwner } from './runtime'
+import { readPaletteColor } from '@valley/plugin-sdk/palette'
 import type { ResourceSearchResult } from '@valley/plugin-sdk/types'
 import { CANVAS_PRESET_PALETTE, resolveColor, validEnd, type CanvasColor, type CanvasEdge, type CanvasNode, type CanvasNodeType } from './canvasModel'
 import { uiText } from './localization'
@@ -172,6 +173,12 @@ export const SelectionMenu = (props: {
   )
 }
 
+/** A canvas file stores a preset number or a literal hex, so a palette pick is kept as its colour. */
+const canvasHex = (picked: string | null): string | undefined => {
+  const hex = picked ? (picked.startsWith('#') ? picked : readPaletteColor(picked)).toLowerCase() : ''
+  return /^#[0-9a-f]{6}$/.test(hex) ? hex : undefined
+}
+
 /**
  * No colour, the six presets and a seventh **custom** swatch. Presets render
  * through the palette, so they follow the theme and a user's design snippet;
@@ -202,19 +209,21 @@ export const ColorPicker = (props: {
           onClick={() => props.onPick(key, true)}
         />
       ))}
-      <span
+      <button
+        type="button"
         className={`canvas-color-picker-item canvas-color-picker-custom${custom ? ' is-active' : ''}`}
         style={custom ? { ['--canvas-color' as string]: custom } : undefined}
         aria-label={uiText('auto.34cfc6448b9d')}
-      >
-        <input
-          type="color"
-          aria-label={uiText('auto.34cfc6448b9d')}
-          value={custom ?? '#888888'}
-          onInput={(e) => props.onPick((e.target as HTMLInputElement).value.toLowerCase(), false)}
-          onChange={(e) => props.onPick(e.target.value.toLowerCase(), true)}
-        />
-      </span>
+        aria-pressed={!!custom}
+        onClick={(e) => void api.ui.pickColor({
+          value: custom ?? '',
+          ariaLabel: uiText('auto.34cfc6448b9d'),
+          onChange: (picked) => { const hex = canvasHex(picked); if (hex) props.onPick(hex, false) }
+        }, { anchor: e.currentTarget }).then((picked) => {
+          const hex = canvasHex(picked)
+          if (hex) props.onPick(hex, true)
+        })}
+      />
     </>
   )
 }

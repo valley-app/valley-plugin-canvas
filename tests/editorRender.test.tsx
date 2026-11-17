@@ -513,7 +513,7 @@ describe('CanvasEditor', () => {
     fireEvent.contextMenu(document.querySelector('.canvas-root')!)
     const items = menu.mock.calls.at(-1)?.[0] ?? []
     const lock = items.find((item) => 'label' in item && item.label === 'Read-only')
-    await act(async () => { if (lock && 'onSelect' in lock) await lock.onSelect?.() })
+    await act(async () => { if (lock && 'onSelect' in lock) await lock.onSelect?.({ newTab: false }) })
     await expect(editCanvasTarget(mock.api, 'Test.canvas', { type: 'delete-nodes', ids: ['a'] }, canvasSession('Test.canvas')!.get().revision)).rejects.toThrow('read-only')
   })
 
@@ -642,7 +642,7 @@ describe('CanvasEditor chrome', () => {
     const items = mock.menus[mock.menus.length - 1]
     const bringToFront = items.find((i) => i.label === 'Bring to front')
     expect(bringToFront).toBeTruthy()
-    await act(async () => bringToFront!.onSelect!())
+    await act(async () => bringToFront!.onSelect!({ newTab: false }))
 
     await waitFor(async () => {
       const data = parseCanvas(await mock.api.realm.readFile('Test.canvas'))
@@ -661,7 +661,7 @@ describe('CanvasEditor chrome', () => {
     expect(picker.hasAttribute('data-plugin-widget-occluder')).toBe(true)
     // No colour + six presets + the custom swatch.
     expect(picker.querySelectorAll('.canvas-color-picker-item')).toHaveLength(8)
-    expect(picker.querySelector('.canvas-color-picker-custom input[type="color"]')).toBeTruthy()
+    expect(picker.querySelector('button.canvas-color-picker-custom')).toBeTruthy()
 
     // Presets render as palette variables, never a frozen hex.
     const preset = picker.querySelectorAll('.canvas-color-picker-item:not(.is-none):not(.canvas-color-picker-custom)')[0] as HTMLElement
@@ -673,8 +673,12 @@ describe('CanvasEditor chrome', () => {
       expect(data.nodes[0].color).toBe('1')
     })
     fireEvent.click(screen.getByLabelText('Set color'))
-    const custom = container.querySelector('.canvas-color-picker-custom input') as HTMLInputElement
-    fireEvent.input(custom, { target: { value: '#2468ac' } })
+    fireEvent.click(container.querySelector('.canvas-color-picker-custom')!)
+    await waitFor(() => expect(mock.pickers).toHaveLength(1))
+    expect(mock.pickers[0]).toMatchObject({ kind: 'color', options: { value: '' } })
+    await act(async () => (mock.pickers[0].options as { onChange: (value: string) => void }).onChange('#13579b'))
+    await waitFor(async () => expect(parseCanvas(await mock.api.realm.readFile('Test.canvas')).nodes[0].color).toBe('#13579b'))
+    await act(async () => mock.pickers[0].resolve('#2468AC'))
     await waitFor(async () => expect(parseCanvas(await mock.api.realm.readFile('Test.canvas')).nodes[0].color).toBe('#2468ac'))
     fireEvent.click(screen.getByLabelText('Set color'))
     fireEvent.click(container.querySelector('.canvas-color-picker-item.is-none')!)
@@ -743,7 +747,7 @@ describe('CanvasEditor chrome', () => {
       fireEvent.click(screen.getByLabelText('Line direction'))
       await waitFor(() => expect(mock.menus.length).toBeGreaterThan(0))
       const item = mock.menus[mock.menus.length - 1].find((entry) => entry.id === id)!
-      await act(async () => { await item.onSelect!() })
+      await act(async () => { await item.onSelect!({ newTab: false }) })
     }
 
     await choose('both')
